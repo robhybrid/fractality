@@ -2,6 +2,7 @@ import { BUDGET } from "../budget.js";
 import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, cloneStops } from "../data.js";
 import { BeatListener } from "./audio.js";
 import { clamp, cssGradient, fitSize, randomPalette, rasterize, shiftHue, smoothDamp } from "./color.js";
+import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, pickChild } from "./frames.js";
 import { Presenter, orbitCamera } from "./presenter.js";
 
 const HOTKEY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9 };
@@ -74,6 +75,9 @@ class Engine {
     this.fps = 60;
     this.error = "";
     this.view = {};
+    this.frameDigits = [];
+    this.frameData = null;
+    this.frameSig = "";
     this.applyHome(FRACTALS[0], true);
     this.renderer.uploadPalette("a", rasterize(this.stops));
     this.renderer.uploadPalette("b", rasterize(this.stops));
@@ -138,6 +142,8 @@ class Engine {
 
   applyHome(fractal, snapPower = true) {
     const home = fractal.home;
+    this.frameDigits = [];
+    this.refreshFrame(fractal);
     if (fractal.family === "ray") {
       this.yaw = home.yaw;
       this.pitch = home.pitch;
@@ -198,10 +204,13 @@ class Engine {
       juliaRe: this.juliaReT,
       juliaIm: this.juliaImT,
       extra: this.extraT,
+      frame: this.frameDigits.slice(),
     });
   }
 
   restore(mem) {
+    this.frameDigits = (mem.frame || []).slice();
+    this.refreshFrame();
     this.cx = mem.cx;
     this.cy = mem.cy;
     this.logR = mem.logR;
@@ -304,8 +313,16 @@ class Engine {
     const world = this.screenToWorld(x, y);
     this.cx = world.x + (this.cx - world.x) * factor;
     this.cy = world.y + (this.cy - world.y) * factor;
-    this.logR = Math.log(clamp(this.radius * factor, BUDGET.minRadius, BUDGET.maxRadius));
+    this.logR = Math.log(clamp(this.radius * factor, this.minRadius(), BUDGET.maxRadius));
     this.radius = Math.exp(this.logR);
+    if (this.fractal.frame && factor < 1) {
+      const anchor = anchorPoint(this.fractal.frame, this.cx, this.cy);
+      if (anchor) {
+        const pull = Math.min(1, (1 - factor) * 2.5);
+        this.cx += (anchor[0] - this.cx) * pull;
+        this.cy += (anchor[1] - this.cy) * pull;
+      }
+    }
     this.syncTargets();
   }
 
@@ -333,12 +350,17 @@ class Engine {
     const world = this.screenToWorld(event?.offsetX ?? this.mx, event?.offsetY ?? this.my);
     this.tcx = world.x + (this.cx - world.x) * factor;
     this.tcy = world.y + (this.cy - world.y) * factor;
-    this.tLogR = Math.log(clamp(this.radius * factor, BUDGET.minRadius, BUDGET.maxRadius));
+    this.tLogR = Math.log(clamp(this.radius * factor, this.minRadius(), BUDGET.maxRadius));
     this.ease = 0.7;
   }
 
   effectiveIters() {
     const f = this.fractal;
+    if (f.family === "shape") {
+      const { h } = this.screenSize();
+      const per = f.frame === "square" || f.formula === 14 || f.formula === 15 ? Math.log(3) : Math.log(2);
+      return Math.max(3, Math.round(this.frameDigits.length + Math.log(h / (2 * this.radius)) / per + 3));
+    }
     let wanted = this.iterBias;
     if (this.autoIter && f.family !== "ray") {
       const base = f.home.r || 1.35;
@@ -380,6 +402,7 @@ class Engine {
     } else if (!holding) {
       geometry = this.easeView(dt) || geometry;
     }
+    this.renormalize();
     const beforePower = this.power;
     [this.power, this.vPower] = smoothDamp(this.power, this.powerT, this.vPower, this.breathe ? 0.45 : 0.35, dt);
     [this.bailout, this.vBail] = smoothDamp(this.bailout, this.bailT, this.vBail, 0.4, dt);
@@ -401,6 +424,67 @@ class Engine {
     if (!this.moving() && Math.abs(this.zoomRate) < 0.02 && !this.breathe) this.ease = 0.62;
     this.draw(soft);
     this.publish(false, sound);
+  }
+
+  minRadius() {
+    if (this.fractal.frame) return 1e-280;
+    return 1e-13 * Math.max(1, Math.abs(this.cx), Math.abs(this.cy));
+  }
+
+  refreshFrame(fractal = this.fractal) {
+    this.frameData = fractal.frame ? frameInfo(fractal.frame, this.frameDigits) : null;
+    this.frameSig = fractal.frame ? frameKey(this.frameDigits) : "";
+  }
+
+  reframe(S, ox, oy) {
+    const map = (x, y) => [(x - ox) * S, (y - oy) * S];
+    [this.cx, this.cy] = map(this.cx, this.cy);
+    [this.tcx, this.tcy] = map(this.tcx, this.tcy);
+    this.radius *= S;
+    this.logR += Math.log(S);
+    this.tLogR += Math.log(S);
+    this.vCx *= S;
+    this.vCy *= S;
+    this.renderer.reframe?.(S, ox, oy);
+  }
+
+  renormalize() {
+    const kind = this.fractal.frame;
+    if (!kind) return;
+    const spec = frameSpec(kind);
+    let changed = false;
+    for (let guard = 0; guard < 8; guard += 1) {
+      if (this.radius < spec.down) {
+        const child = pickChild(kind, this.cx, this.cy);
+        if (!child) break;
+        this.frameDigits.push(child.digit);
+        this.reframe(spec.scale, child.ox, child.oy);
+        changed = true;
+      } else if (this.radius > spec.up && this.frameDigits.length) {
+        const [ox, oy] = childOffset(kind, this.frameDigits.pop());
+        this.reframe(1 / spec.scale, -ox * spec.scale, -oy * spec.scale);
+        changed = true;
+      } else break;
+    }
+    if (changed) this.refreshFrame();
+  }
+
+  zoomLog10() {
+    const f = this.fractal;
+    if (f.family === "ray") return 0;
+    const scale = f.frame ? frameSpec(f.frame).scale : 1;
+    return this.frameDigits.length * Math.log10(scale) + Math.log10((f.home.r || 1) / this.radius);
+  }
+
+  toRoot() {
+    const kind = this.fractal.frame;
+    if (!kind) return;
+    const spec = frameSpec(kind);
+    while (this.frameDigits.length) {
+      const [ox, oy] = childOffset(kind, this.frameDigits.pop());
+      this.reframe(1 / spec.scale, -ox * spec.scale, -oy * spec.scale);
+    }
+    this.refreshFrame();
   }
 
   moving() {
@@ -469,7 +553,7 @@ class Engine {
     }
     if (this.beatMode >= 2 && !this.paused) {
       if (this.fractal.family === "ray") this.distT = clamp(this.dist * 0.94, BUDGET.minDist, BUDGET.maxDist);
-      else this.tLogR = Math.log(clamp(this.radius * 0.94, BUDGET.minRadius, BUDGET.maxRadius));
+      else this.tLogR = Math.log(clamp(this.radius * 0.94, this.minRadius(), BUDGET.maxRadius));
       this.ease = 0.22;
     }
   }
@@ -522,6 +606,8 @@ class Engine {
         yaw: this.yaw || 0,
         pitch: this.pitch || 0,
         dist: this.dist || 0,
+        frame: this.frameData,
+        frameKey: this.frameSig,
         phase: this.phase,
         density: this.density,
         soft,
@@ -638,6 +724,8 @@ class Engine {
       cx: this.cx,
       cy: this.cy,
       radius: this.radius,
+      frameDepth: this.frameDigits.length,
+      zoomLog10: this.zoomLog10(),
       yaw: this.yaw || 0,
       pitch: this.pitch || 0,
       dist: this.dist || 0,
@@ -762,7 +850,7 @@ class Engine {
 
   bumpZoom(factor) {
     if (this.fractal.family === "ray") this.distT = clamp(this.dist * factor, BUDGET.minDist, BUDGET.maxDist);
-    else this.tLogR = Math.log(clamp(Math.exp(this.tLogR) * factor, BUDGET.minRadius, BUDGET.maxRadius));
+    else this.tLogR = Math.log(clamp(Math.exp(this.tLogR) * factor, this.minRadius(), BUDGET.maxRadius));
     this.ease = 0.55;
   }
 
@@ -887,6 +975,7 @@ class Engine {
   }
 
   resetView() {
+    this.toRoot();
     const home = this.fractal.home;
     this.ease = 0.85;
     if (this.fractal.family === "ray") {
@@ -904,6 +993,7 @@ class Engine {
   }
 
   flyNext() {
+    this.toRoot();
     const list = PRESETS[this.fractal.id] || [this.fractal.home.x !== undefined ? { ...this.fractal.home, name: "Home" } : null];
     const presets = list.filter(Boolean);
     if (!presets.length) return;

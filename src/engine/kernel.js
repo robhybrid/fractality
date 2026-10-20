@@ -326,10 +326,20 @@ function magnet(buf, idx, cx, cy, bail, n) {
   paintEscape(buf, idx, false, 0, 0);
 }
 
+function levelsFor(state, base) {
+  const px = (2 * state.radius) / Math.max(1, state.h);
+  return Math.log(1 / Math.max(px, 1e-300)) / Math.log(base);
+}
+
 function fillShape(buf, state, y0, y1) {
   const p = planeOf(state);
   const formula = state.formula | 0;
-  const n = clampIter(state.iters, formula === 13 ? 7 : formula >= 14 ? 7 : 10);
+  const frame = state.frame || null;
+  let n;
+  if (formula === 12) n = Math.max(4, Math.min(60, Math.ceil(levelsFor(state, 2)) + 3));
+  else if (formula === 13) n = Math.max(3, Math.min(36, Math.ceil(levelsFor(state, 3)) + 2));
+  else if (formula === 16) n = Math.max(3, Math.min(40, Math.ceil(levelsFor(state, 2)) + 3));
+  else n = Math.max(3, Math.min(30, Math.ceil(levelsFor(state, 3) + Math.log(2) / Math.log(3)) + 2));
   const w = buf.w;
   buf.source = 0;
   for (let y = y0; y < y1; y += 1) {
@@ -339,58 +349,117 @@ function fillShape(buf, state, y0, y1) {
     const o = (y - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
       const idx = o + x;
-      if (formula === 12) sierpinski(buf, idx, wx, wy, n);
-      else if (formula === 13) carpet(buf, idx, wx, wy, n);
+      if (formula === 12) sierpinski(buf, idx, wx, wy, n, frame);
+      else if (formula === 13) carpet(buf, idx, wx, wy, n, frame);
       else if (formula === 14) koch(buf, idx, wx, wy, n, false);
       else if (formula === 15) koch(buf, idx, wx, wy, n, true);
-      else kaleido(buf, idx, wx, wy, Math.max(3, Math.min(8, n)), state.extra || 0);
+      else kaleido(buf, idx, wx, wy, n, state.extra || 0);
       wx += row.dwx;
       wy += row.dwy;
     }
   }
 }
 
-function sierpinski(buf, idx, px, py, n) {
-  const H = 0.8660254037844386;
-  let gz = py / H;
-  let gy = px - 0.5 * gz;
+const SH = 0.8660254037844386;
+const LEVEL_TONE = 3;
+
+function inTri(x, y) {
+  const gz = y / SH;
+  const gy = x - 0.5 * gz;
+  return gz >= 0 && gy >= 0 && 1 - gy - gz >= 0;
+}
+
+/** Holes take one color per depth. What is left after n levels is the dark lace. */
+function sierIter(buf, idx, x, y, n, base) {
+  let gz = y / SH;
+  let gy = x - 0.5 * gz;
   let gx = 1 - gy - gz;
-  if (gx < 0 || gy < 0 || gz < 0) {
-    paintEscape(buf, idx, true, Math.max(0, Math.min(40, -Math.min(gx, gy, gz) * 22)), 0.15);
-    return;
-  }
   for (let i = 0; i < n; i += 1) {
     if (gx < 0.5 && gy < 0.5 && gz < 0.5) {
-      paintEscape(buf, idx, false, 0, 0);
+      paintEscape(buf, idx, true, (base + i) * LEVEL_TONE, 0);
       return;
     }
     gx = gx >= 0.5 ? gx * 2 - 1 : gx * 2;
     gy = gy >= 0.5 ? gy * 2 - 1 : gy * 2;
     gz = gz >= 0.5 ? gz * 2 - 1 : gz * 2;
   }
-  paintEscape(buf, idx, true, 18 + (px + py) * 6, 0.8);
+  paintEscape(buf, idx, false, 0, 0);
 }
 
-function carpet(buf, idx, px, py, n) {
-  if (px <= 0 || py <= 0 || px >= 1 || py >= 1) {
-    const qx = Math.min(1, Math.max(0, px));
-    const qy = Math.min(1, Math.max(0, py));
-    paintEscape(buf, idx, true, Math.hypot(px - qx, py - qy) * 36, 0.1);
+function sierpinski(buf, idx, px, py, n, frame) {
+  if (inTri(px, py)) {
+    sierIter(buf, idx, px, py, n, frame?.depth || 0);
     return;
   }
-  let s = 1;
+  if (frame && frame.depth > 0) {
+    for (let j = 0; j < 3; j += 1) {
+      const off = frame.offsets[j];
+      if (off && inTri(px - off[0], py - off[1])) {
+        sierIter(buf, idx, px - off[0], py - off[1], n, frame.depth);
+        return;
+      }
+    }
+    let x = px;
+    let y = py;
+    for (let u = 0; u < frame.up.length; u += 1) {
+      const k = frame.up[u];
+      x = x * 0.5 + (k === 1 ? 0.5 : k === 2 ? 0.25 : 0);
+      y = y * 0.5 + (k === 2 ? SH * 0.5 : 0);
+      if (inTri(x, y)) {
+        sierIter(buf, idx, x, y, n + u + 1, frame.depth - u - 1);
+        return;
+      }
+    }
+    paintEscape(buf, idx, true, 0, 0);
+    return;
+  }
+  const gz = py / SH;
+  const gy = px - 0.5 * gz;
+  const gx = 1 - gy - gz;
+  paintEscape(buf, idx, true, Math.max(0, Math.min(40, -Math.min(gx, gy, gz) * 22)), 0.15);
+}
+
+function carpIter(buf, idx, x, y, n, base) {
   for (let i = 0; i < n; i += 1) {
-    s *= 3;
-    let lx = (px * s) % 1;
-    let ly = (py * s) % 1;
-    if (lx < 0) lx += 1;
-    if (ly < 0) ly += 1;
-    if (lx > 1 / 3 && lx < 2 / 3 && ly > 1 / 3 && ly < 2 / 3) {
-      paintEscape(buf, idx, false, 0, 0);
+    x *= 3;
+    y *= 3;
+    let a = Math.floor(x);
+    let b = Math.floor(y);
+    if (a > 2) a = 2;
+    if (b > 2) b = 2;
+    if (a < 0) a = 0;
+    if (b < 0) b = 0;
+    if (a === 1 && b === 1) {
+      paintEscape(buf, idx, true, (base + i) * LEVEL_TONE, 0);
       return;
     }
+    x -= a;
+    y -= b;
   }
-  paintEscape(buf, idx, true, 16 + (px + py) * 14, 0.55);
+  paintEscape(buf, idx, false, 0, 0);
+}
+
+function carpet(buf, idx, px, py, n, frame) {
+  if (px >= 0 && py >= 0 && px < 1 && py < 1) {
+    carpIter(buf, idx, px, py, n, frame?.depth || 0);
+    return;
+  }
+  const dx = Math.floor(px);
+  const dy = Math.floor(py);
+  if (frame && frame.depth > 0 && Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
+    const [status, level] = frame.nb[(dx + 1) * 3 + (dy + 1)];
+    if (status === 2) carpIter(buf, idx, px - dx, py - dy, n, frame.depth);
+    else if (status === 1) paintEscape(buf, idx, true, level * LEVEL_TONE, 0);
+    else paintEscape(buf, idx, true, 0, 0);
+    return;
+  }
+  if (frame && frame.depth > 0) {
+    paintEscape(buf, idx, true, 0, 0);
+    return;
+  }
+  const qx = Math.min(1, Math.max(0, px));
+  const qy = Math.min(1, Math.max(0, py));
+  paintEscape(buf, idx, true, Math.hypot(px - qx, py - qy) * 36, 0.1);
 }
 
 function fold(x, y, ang) {
@@ -407,7 +476,7 @@ function kochFold(x, y) {
 }
 
 function koch(buf, idx, px, py, n, snow) {
-  const steps = Math.max(3, Math.min(7, n));
+  const steps = n;
   let x = px;
   let y = py;
   if (snow) {

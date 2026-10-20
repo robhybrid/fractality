@@ -35,6 +35,12 @@ function Slider({ label, min, max, step, value, onChange, disabled, format }) {
   );
 }
 
+function zoomText(log10) {
+  if (log10 < 6) return `${Math.round(10 ** log10).toLocaleString()}×`;
+  const e = Math.floor(log10);
+  return `${(10 ** (log10 - e)).toFixed(1)}e${e}×`;
+}
+
 export function Controls({ snap, engine }) {
   if (!engine) return null;
   const stop = snap.stops[snap.selectedStop] || snap.stops[0];
@@ -53,7 +59,9 @@ export function Controls({ snap, engine }) {
       <p className="coords">
         {snap.family === "ray"
           ? `yaw ${snap.yaw.toFixed(2)} · pitch ${snap.pitch.toFixed(2)} · dist ${snap.dist.toFixed(2)}`
-          : `${snap.cx.toFixed(5)}  ${snap.cy >= 0 ? "+" : "−"} ${Math.abs(snap.cy).toFixed(5)}i · r ${snap.radius.toExponential(2)}`}
+          : snap.frameDepth
+            ? `depth ${snap.frameDepth} · zoom ${zoomText(snap.zoomLog10)}`
+            : `${snap.cx.toFixed(5)}  ${snap.cy >= 0 ? "+" : "−"} ${Math.abs(snap.cy).toFixed(5)}i · r ${snap.radius.toExponential(2)}`}
       </p>
       <div
         className="livebar"

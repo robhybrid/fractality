@@ -39,6 +39,7 @@ function paramKey(s) {
     s.iters | 0,
     q(s.trap || 0, 3),
     s.skipInterior ? 1 : 0,
+    s.frameKey || "",
     s.family === "ray" ? `${q(s.yaw, 4)}:${q(s.pitch, 4)}:${q(s.dist, 4)}:${s.steps}:${s.rayIters}` : "",
   ].join(":");
 }
@@ -420,6 +421,17 @@ export class Presenter {
       const sy = (1 - qy / state.radius) * 0.5 * H;
       return [sx, sy];
     };
+  }
+
+  reframe(S, ox, oy) {
+    const move = (view) => {
+      if (!view) return;
+      view.cx = (view.cx - ox) * S;
+      view.cy = (view.cy - oy) * S;
+      view.radius *= S;
+    };
+    move(this.shown?.view);
+    move(this.job?.view);
   }
 
   disableGpu() {
