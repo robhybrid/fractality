@@ -85,31 +85,7 @@ export function MoviePanel({ movie, engine }) {
                 at {seconds(key.at)}
                 {key.depth ? ` · depth ${key.depth}` : ""}
               </span>
-              {i < movie.keys.length - 1 ? (
-                <div className="keyfields">
-                  <label>
-                    <input
-                      type="number"
-                      min={0.1}
-                      max={600}
-                      step={0.5}
-                      value={key.duration}
-                      disabled={busy}
-                      onChange={(event) => m.setDuration(i, Number(event.target.value))}
-                    />
-                    s
-                  </label>
-                  <select value={key.easing} disabled={busy} onChange={(event) => m.setEasing(i, event.target.value)} aria-label="Easing">
-                    {EASINGS.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : (
-                <span>end</span>
-              )}
+              {i === movie.keys.length - 1 ? <span>end</span> : null}
             </div>
             <div className="keytools">
               <button type="button" disabled={busy || i === 0} onClick={() => m.moveKey(i, -1)} title="Move up">
@@ -125,12 +101,35 @@ export function MoviePanel({ movie, engine }) {
                 ✕
               </button>
             </div>
+            {i < movie.keys.length - 1 ? (
+              <div className="keyfields">
+                <span>to next</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  max={600}
+                  step={0.5}
+                  value={key.duration}
+                  disabled={busy}
+                  aria-label="Seconds to the next keyframe"
+                  onChange={(event) => m.setDuration(i, Number(event.target.value))}
+                />
+                <span>s</span>
+                <select value={key.easing} disabled={busy} onChange={(event) => m.setEasing(i, event.target.value)} aria-label="Easing">
+                  {EASINGS.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
           </li>
         ))}
       </ol>
 
       <div className="exportgrid">
-        <label className="field">
+        <label className="field wide">
           Resolution
           <select value={settings.resolution} disabled={busy} onChange={(event) => m.setSetting("resolution", event.target.value)}>
             {RESOLUTIONS.map((item) => (
