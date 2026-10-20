@@ -261,7 +261,7 @@ export function createGpuEscape() {
   /** Pixel-iterations per millisecond, refined by synchronous probes. */
   let rate = 2e5;
   let latency = Infinity;
-  const budgetMs = 6;
+  let budgetMs = 6;
 
   function ensureTarget(w, h) {
     if (w <= targetW && h <= targetH) return;
@@ -370,6 +370,11 @@ export function createGpuEscape() {
     },
     get rate() {
       return rate;
+    },
+    /** Target GPU time per draw; keep it well under a display frame. */
+    setBudget(ms, assumedRate = rate) {
+      budgetMs = ms;
+      rate = assumedRate;
     },
     /**
      * Starts a tiled fill of buf. Pass `orbit` ({ Z, N, ox, oy }: pixel dc =

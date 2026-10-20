@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Fractality GPU bench</title>
+    <style>
+      body { background: #07080c; color: #f3efe6; font: 14px -apple-system, sans-serif; margin: 24px; }
+      button { font: inherit; padding: 6px 14px; }
+      pre { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h3>Escape-time backends, 1536×960, Mandelbrot home view</h3>
+    <p>Dev server only (not part of the build). Runs each backend once to warm up, then times one frame. GPU paths here run as one draw or dispatch, so close other tabs; the app itself tiles GPU work to ~6 ms per draw.</p>
+    <button id="run">Run</button>
+    <pre id="out"></pre>
+    <script type="module" src="/src/bench/bench.js"></script>
+  </body>
+</html>
