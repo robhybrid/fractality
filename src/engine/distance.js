@@ -29,6 +29,7 @@ const AA_OFFSETS = [
 const LIGHT_ANGLE = (135 * Math.PI) / 180;
 const LIGHT_HEIGHT = 1.5;
 const DISK_MIN_PX = 1.5;
+const GUESS_PX = 3;
 const KOEBE_K = 0.3;
 
 /** Filament weight for a distance in pixels: 1 on the boundary, 0 far away. */
@@ -37,10 +38,12 @@ export function filament(dpx) {
   return Math.exp(-t * t);
 }
 
-function filamentInverse(f) {
-  if (f >= 1) return 0;
-  if (f <= 1e-6) return 64;
-  return FIL_W * Math.sqrt(-Math.log(f));
+const FIL_LUT = new Uint8Array(64 * 4);
+for (let i = 0; i < FIL_LUT.length; i += 1) FIL_LUT[i] = Math.round(filament(i / 64) * 255);
+
+function filamentByte(dpx) {
+  const j = (dpx * 64) | 0;
+  return j < FIL_LUT.length ? FIL_LUT[j] : 0;
 }
 
 export function demSupported(state) {
@@ -666,8 +669,9 @@ function fillExteriorDisk(buf, mask, w, ly0, rows, x, ly, r, k, row) {
  * antialias.js refineRows: `base` holds rows y0-1 .. y1 of the frame. Only
  * pixels within AA_PX of the boundary (and interior pixels touching the
  * outside) get four more samples; everything farther is a smooth gradient.
- * The filament weight is averaged, with inside samples counting as fully
- * filament, so coverage is already in `dist` and `cover` stays 0.
+ * Distance and light are averaged over the escaping samples; the filament
+ * weight (`fil`, 0..255) over all of them with inside samples counting as
+ * fully filament, so coverage is already in `fil` and `cover` stays 0.
  */
 export function refineDistanceRows(state, base, y0, y1, select = "de") {
   const k = context(state);
@@ -682,6 +686,7 @@ export function refineDistanceRows(state, base, y0, y1, select = "de") {
   const cover = new Uint8Array(n);
   const dist = new Float32Array(n);
   const lit = new Uint8Array(n);
+  const fil = new Uint8Array(n);
   const bi = base.iter;
   const ba = base.alpha;
   const bd = base.dist;
@@ -701,6 +706,7 @@ export function refineDistanceRows(state, base, y0, y1, select = "de") {
       band[o] = ba[kk] ? Math.floor(bi[kk]) : 0;
       dist[o] = bd[kk];
       lit[o] = bl[kk];
+      fil[o] = ba[kk] ? filamentByte(bd[kk]) : 255;
       let pick;
       if (select === "all") pick = true;
       else if (select === "band") {
@@ -716,6 +722,7 @@ export function refineDistanceRows(state, base, y0, y1, select = "de") {
       let sumI = out ? bi[kk] : 0;
       let sumE = out ? base.extra[kk] : 0;
       let sumL = out ? bl[kk] / 255 : 0;
+      let sumD = out ? bd[kk] : 0;
       let sumB = out ? Math.floor(bi[kk]) : 0;
       const wx = row.wx + x * row.dwx;
       const wy = row.wy + x * row.dwy;
@@ -728,7 +735,9 @@ export function refineDistanceRows(state, base, y0, y1, select = "de") {
           continue;
         }
         out += 1;
-        sumF += filament(S.b * k.invPx);
+        const d = S.b * k.invPx;
+        sumF += filament(d);
+        sumD += d;
         sumI += S.iter;
         sumE += S.extra;
         sumL += S.lit;
@@ -739,11 +748,12 @@ export function refineDistanceRows(state, base, y0, y1, select = "de") {
       extra[o] = sumE / out;
       band[o] = sumB / out;
       lit[o] = Math.round((sumL / out) * 255);
-      dist[o] = filamentInverse(sumF / 5);
+      dist[o] = sumD / out;
+      fil[o] = Math.round((sumF / 5) * 255);
       alpha[o] = 1;
     }
   }
-  return { iter, extra, alpha, band, cover, dist, lit, refined };
+  return { iter, extra, alpha, band, cover, dist, lit, fil, refined };
 }
 
 /** Copies the distance fields of a worker message into the frame buffer at `off`. */
@@ -754,6 +764,10 @@ export function storeDistance(buf, msg, off) {
   if (!buf.lit || buf.lit.length !== n) buf.lit = new Uint8Array(n);
   buf.dist.set(msg.dist, off);
   buf.lit.set(msg.lit, off);
+  if (msg.fil) {
+    if (!buf.fil || buf.fil.length !== n) buf.fil = new Uint8Array(n);
+    buf.fil.set(msg.fil, off);
+  }
 }
 
 /**
@@ -771,33 +785,98 @@ export function fillDistance(buf, state, y0, y1) {
   const koebe = k.koebe;
   const useMask = k.disk || koebe;
   const mask = useMask ? new Uint8Array(w * rows) : null;
-  const minR = DISK_MIN_PX;
+  const ly0 = y0 - buf.y0;
+  const starts = new Array(rows);
+  for (let ly = 0; ly < rows; ly += 1) starts[ly] = rowStart(p, y0 + ly);
   let iterated = 0;
+  const visit = (x, ly) => {
+    const row = starts[ly];
+    const wx = row.wx + x * row.dwx;
+    const wy = row.wy + x * row.dwy;
+    sample(k, wx, wy);
+    iterated += 1;
+    store(buf, (ly0 + ly) * w + x, k);
+    if (!useMask) return;
+    mask[ly * w + x] = 1;
+    if (S.esc) {
+      if (!koebe) return;
+      const r = S.b * k.koebeK * k.invPx;
+      if (r >= DISK_MIN_PX && sampleSquare2(k, wx, wy)) fillExteriorDisk(buf, mask, w, ly0, rows, x, ly, r, k, row);
+    } else if (S.inR > 0) {
+      const r = S.inR * k.invPx;
+      if (r >= DISK_MIN_PX) fillInteriorDisk(buf, mask, w, ly0, rows, x, ly, r);
+    }
+  };
+  const guess = state.soft && rows >= 3 && w >= 3;
+  if (!guess) {
+    for (let ly = 0; ly < rows; ly += 1) {
+      const mo = ly * w;
+      for (let x = 0; x < w; x += 1) if (!useMask || !mask[mo + x]) visit(x, ly);
+    }
+    return iterated;
+  }
+  const coarseRow = (ly) => (ly & 1) === 0 || ly === rows - 1;
+  const coarseCol = (x) => (x & 1) === 0 || x === w - 1;
   for (let ly = 0; ly < rows; ly += 1) {
-    const row = rowStart(p, y0 + ly);
-    const o = (y0 + ly - buf.y0) * w;
+    if (!coarseRow(ly)) continue;
+    const mo = ly * w;
+    for (let x = 0; x < w; x += 1) if (coarseCol(x) && (!useMask || !mask[mo + x])) visit(x, ly);
+  }
+  for (let ly = 0; ly < rows; ly += 1) {
+    const rowCoarse = coarseRow(ly);
     const mo = ly * w;
     for (let x = 0; x < w; x += 1) {
-      if (useMask && mask[mo + x]) continue;
-      sample(k, row.wx + x * row.dwx, row.wy + x * row.dwy);
-      iterated += 1;
-      store(buf, o + x, k);
-      if (!useMask) continue;
-      mask[mo + x] = 1;
-      if (S.esc) {
-        if (koebe) {
-          const r = S.b * k.koebeK * k.invPx;
-          if (r >= minR) {
-            if (sampleSquare2(k, row.wx + x * row.dwx, row.wy + x * row.dwy)) fillExteriorDisk(buf, mask, w, y0 - buf.y0, rows, x, ly, r, k, row);
-          }
-        }
-      } else if (S.inR > 0) {
-        const r = S.inR * k.invPx;
-        if (r >= minR) fillInteriorDisk(buf, mask, w, y0 - buf.y0, rows, x, ly, r);
-      }
+      if ((rowCoarse && coarseCol(x)) || (useMask && mask[mo + x])) continue;
+      if (!guessGap(buf, (ly0 + ly) * w + x, w, rowCoarse, coarseCol(x))) visit(x, ly);
     }
   }
   return iterated;
+}
+
+/**
+ * Solid guessing while the view moves: a gap pixel takes the average of its
+ * computed neighbors when they are all inside, or all outside in one band and
+ * well clear of the boundary, so filaments are always iterated.
+ */
+function guessGap(buf, idx, w, rowCoarse, colCoarse) {
+  const { iter, extra, alpha, dist, lit } = buf;
+  let a;
+  let b;
+  let c = -1;
+  let d = -1;
+  if (rowCoarse) {
+    a = idx - 1;
+    b = idx + 1;
+  } else if (colCoarse) {
+    a = idx - w;
+    b = idx + w;
+  } else {
+    a = idx - w - 1;
+    b = idx - w + 1;
+    c = idx + w - 1;
+    d = idx + w + 1;
+  }
+  const four = c >= 0;
+  const out = alpha[a] + alpha[b] + (four ? alpha[c] + alpha[d] : 0);
+  if (out === 0) {
+    iter[idx] = 0;
+    extra[idx] = 0;
+    alpha[idx] = 0;
+    dist[idx] = 0;
+    lit[idx] = 255;
+    return true;
+  }
+  if (out !== (four ? 4 : 2)) return false;
+  const band = Math.floor(iter[a]);
+  if (Math.floor(iter[b]) !== band || dist[a] < GUESS_PX || dist[b] < GUESS_PX) return false;
+  if (four && (Math.floor(iter[c]) !== band || Math.floor(iter[d]) !== band || dist[c] < GUESS_PX || dist[d] < GUESS_PX)) return false;
+  const m = four ? 0.25 : 0.5;
+  iter[idx] = (iter[a] + iter[b] + (four ? iter[c] + iter[d] : 0)) * m;
+  extra[idx] = (extra[a] + extra[b] + (four ? extra[c] + extra[d] : 0)) * m;
+  dist[idx] = (dist[a] + dist[b] + (four ? dist[c] + dist[d] : 0)) * m;
+  lit[idx] = Math.round((lit[a] + lit[b] + (four ? lit[c] + lit[d] : 0)) * m);
+  alpha[idx] = 1;
+  return true;
 }
 
 const LUT_SIZE = 1024;
@@ -806,8 +885,6 @@ const OCTAVE = 3.2;
 const litTable = new Float32Array(256);
 for (let i = 0; i < 256; i += 1) litTable[i] = 0.38 + 0.82 * (i / 255);
 
-const FIL_LUT = new Uint8Array(64 * 4);
-for (let i = 0; i < FIL_LUT.length; i += 1) FIL_LUT[i] = Math.round(filament(i / 64) * 255);
 
 /**
  * Per-pixel factors, rebuilt only when a new frame arrives: light (8.8 fixed
@@ -821,7 +898,7 @@ function shadeTables(buf) {
   const mix = (buf.deMix = new Uint8Array(n));
   const halo = (buf.deHalo = new Uint16Array(n));
   buf.deMulFor = buf.dist;
-  const { alpha, dist, lit } = buf;
+  const { alpha, dist, lit, fil } = buf;
   for (let i = 0; i < n; i += 1) {
     if (!alpha[i]) {
       mul[i] = 256;
@@ -830,8 +907,7 @@ function shadeTables(buf) {
       continue;
     }
     const d = dist[i];
-    const j = (d * 64) | 0;
-    mix[i] = j < FIL_LUT.length ? FIL_LUT[j] : 0;
+    mix[i] = fil ? fil[i] : filamentByte(d);
     mul[i] = Math.round(litTable[lit[i]] * 256);
     halo[i] = Math.round((1 + 0.3 / (1 + d * 0.5)) * 256);
   }

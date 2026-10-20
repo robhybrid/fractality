@@ -7,8 +7,8 @@ self.onmessage = (event) => {
   if (base?.dist && state.dem && demSupported(state)) {
     const r = refineDistanceRows(state, base, y0, y1);
     self.postMessage(
-      { gen, y0, y1, aa: true, iter: r.iter, extra: r.extra, alpha: r.alpha, band: r.band, cover: r.cover, dist: r.dist, lit: r.lit },
-      [r.iter.buffer, r.extra.buffer, r.alpha.buffer, r.band.buffer, r.cover.buffer, r.dist.buffer, r.lit.buffer],
+      { gen, y0, y1, aa: true, iter: r.iter, extra: r.extra, alpha: r.alpha, band: r.band, cover: r.cover, dist: r.dist, lit: r.lit, fil: r.fil },
+      [r.iter.buffer, r.extra.buffer, r.alpha.buffer, r.band.buffer, r.cover.buffer, r.dist.buffer, r.lit.buffer, r.fil.buffer],
     );
     return;
   }
