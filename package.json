@@ -11,6 +11,7 @@
     "bench:shapes": "node scripts/bench-shapes.js"
   },
   "dependencies": {
+    "mediabunny": "^1.61.6",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

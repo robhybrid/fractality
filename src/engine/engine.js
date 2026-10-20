@@ -3,6 +3,7 @@ import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, cloneStops } from "../
 import { BeatListener } from "./audio.js";
 import { clamp, cssGradient, fitSize, randomPalette, rasterize, shiftHue, smoothDamp } from "./color.js";
 import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, renormStep } from "./frames.js";
+import { MovieMaker } from "./movie.js";
 import { Presenter, orbitCamera } from "./presenter.js";
 
 const HOTKEY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9 };
@@ -81,6 +82,7 @@ class Engine {
     this.applyHome(FRACTALS[0], true);
     this.renderer.uploadPalette("a", rasterize(this.stops));
     this.renderer.uploadPalette("b", rasterize(this.stops));
+    this.movie = new MovieMaker(this);
     this.onKey = this.onKey.bind(this);
     this.onPointerDown = this.onPointerDown.bind(this);
     this.onPointerMove = this.onPointerMove.bind(this);
@@ -125,6 +127,7 @@ class Engine {
 
   destroy() {
     cancelAnimationFrame(this.raf);
+    this.movie.cancelExport();
     window.removeEventListener("keydown", this.onKey);
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     window.removeEventListener("pointermove", this.onPointerMove);
@@ -241,6 +244,38 @@ class Engine {
     this.dirty = true;
   }
 
+  /** The view in a form that keyframes store; applyView(v) puts it back exactly. */
+  captureView() {
+    return {
+      frame: this.frameDigits.slice(),
+      cx: this.tcx,
+      cy: this.tcy,
+      logR: this.tLogR,
+      rotation: this.tRot || 0,
+      yaw: this.yawT ?? this.yaw,
+      pitch: this.pitchT ?? this.pitch,
+      dist: this.distT ?? this.dist,
+    };
+  }
+
+  applyView(v, aspect = null) {
+    this.frameDigits = (v.frame || []).slice();
+    this.refreshFrame();
+    this.cx = this.tcx = v.cx;
+    this.cy = this.tcy = v.cy;
+    this.logR = this.tLogR = v.logR;
+    this.radius = Math.exp(v.logR);
+    this.rotation = this.tRot = v.rotation || 0;
+    this.yaw = this.yawT = v.yaw;
+    this.pitch = this.pitchT = v.pitch;
+    this.dist = this.distT = v.dist;
+    this.vCx = this.vCy = this.vLogR = this.vRot = 0;
+    this.vYaw = this.vPitch = this.vDist = 0;
+    this.zoomTarget = this.zoomRate = 0;
+    this.renormalize(aspect);
+    this.dirty = true;
+  }
+
   setFractal(index) {
     const next = (index + FRACTALS.length) % FRACTALS.length;
     if (next === this.fractalIndex) return;
@@ -354,10 +389,10 @@ class Engine {
     this.ease = 0.7;
   }
 
-  effectiveIters() {
+  effectiveIters(iterScale = this.iterScale, screenH = 0) {
     const f = this.fractal;
     if (f.family === "shape") {
-      const { h } = this.screenSize();
+      const h = screenH || this.screenSize().h;
       const per = f.frame === "square" || f.formula === 14 || f.formula === 15 ? Math.log(3) : Math.log(2);
       return Math.max(3, Math.round(this.frameDigits.length + Math.log(h / (2 * this.radius)) / per + 3));
     }
@@ -368,7 +403,7 @@ class Engine {
       wanted = f.family === "shape" ? 6 + zoom * 0.4 : 40 + zoom * 8;
     }
     if (f.family === "ray") wanted = BUDGET.defaultSteps;
-    return Math.round(clamp(wanted * this.iterScale, f.family === "ray" ? BUDGET.minSteps : BUDGET.minIter, f.family === "ray" ? BUDGET.maxSteps : BUDGET.maxIter));
+    return Math.round(clamp(wanted * iterScale, f.family === "ray" ? BUDGET.minSteps : BUDGET.minIter, f.family === "ray" ? BUDGET.maxSteps : BUDGET.maxIter));
   }
 
   frame(now) {
@@ -377,6 +412,10 @@ class Engine {
     this.time += dt;
     this.frameEma = this.frameEma * 0.9 + dt * 1000 * 0.1;
     this.fps = 1000 / Math.max(1, this.frameEma);
+    if (this.movie.exporting) {
+      this.publish(false);
+      return;
+    }
     this.govern();
     const sound = this.audio.sample(this.time, dt);
     if (sound.beat) this.onBeat();
@@ -393,13 +432,14 @@ class Engine {
         this.palMix = 0;
       }
     }
+    const playing = this.movie.tick(dt);
     const holding = this.buttons.size > 0;
     this.zoomRate += (this.zoomTarget - this.zoomRate) * (1 - Math.exp(-8 * dt));
     let geometry = false;
     if (Math.abs(this.zoomRate) > 0.01) {
       this.zoomAt(this.mx, this.my, Math.exp(-this.zoomRate * dt));
       geometry = true;
-    } else if (!holding) {
+    } else if (!holding && !playing) {
       geometry = this.easeView(dt) || geometry;
     }
     this.renormalize();
@@ -416,7 +456,7 @@ class Engine {
     }
     if (Math.abs(this.extra - this.extraT) > 0.001 && Math.abs(this.vExtra) > 0.0001) geometry = true;
     if (geometry) this.dirty = true;
-    const soft = holding || Math.abs(this.zoomRate) > 0.02 || this.breathe || this.moving();
+    const soft = playing || holding || Math.abs(this.zoomRate) > 0.02 || this.breathe || this.moving();
     if (soft !== this.wasSoft) {
       this.dirty = true;
       this.wasSoft = soft;
@@ -448,11 +488,11 @@ class Engine {
     this.renderer.reframe?.(S, ox, oy);
   }
 
-  renormalize() {
+  renormalize(aspect = null) {
     const kind = this.fractal.frame;
     if (!kind) return;
     const { w, h } = this.screenSize();
-    const corner = Math.hypot(1, w / h);
+    const corner = Math.hypot(1, aspect || w / h);
     let changed = false;
     for (let guard = 0; guard < 2048; guard += 1) {
       const step = renormStep(kind, this.frameDigits, this.cx, this.cy, this.radius * corner);
@@ -553,70 +593,83 @@ class Engine {
     }
   }
 
-  draw(soft) {
-    const { w, h } = this.screenSize();
+  /**
+   * The state the presenter renders. With `size` it describes an offline
+   * export frame at exactly that many pixels, ignoring the frame-rate governor.
+   */
+  renderState(soft, size = null) {
+    const offline = !!size;
+    const { w, h } = size || this.screenSize();
     const family = this.fractal.family;
-    const cap = (family === "ray" ? BUDGET.maxPixels3d : family === "ifs" ? BUDGET.maxPixelsIfs : BUDGET.maxPixels2d) * this.detail * this.pixelScale;
-    const [texW, texH] = fitSize(w, h, cap);
+    const iterScale = offline ? 1 : this.iterScale;
+    const quality = offline ? 1 : this.detail * this.pixelScale;
+    const cap = (family === "ray" ? BUDGET.maxPixels3d : family === "ifs" ? BUDGET.maxPixelsIfs : BUDGET.maxPixels2d) * quality;
+    const [texW, texH] = offline ? [w, h] : fitSize(w, h, cap);
     const viewCap = soft ? texW * texH * BUDGET.interactArea : texW * texH;
     const [viewW, viewH] = soft ? fitSize(texW, texH, viewCap) : [texW, texH];
-    const iters = this.effectiveIters();
+    const iters = this.effectiveIters(iterScale, offline ? h : 0);
     let rayIters = BUDGET.bulbIter;
     if (this.fractal.id === "box") rayIters = BUDGET.boxIter;
     if (this.fractal.id === "menger") rayIters = BUDGET.mengerIter;
     if (this.fractal.id === "tetra") rayIters = BUDGET.tetraIter;
-    rayIters = Math.max(3, Math.round(rayIters * this.iterScale));
+    rayIters = Math.max(3, Math.round(rayIters * iterScale));
     const upscale = Math.max(w / viewW, h / viewH);
     const blur = soft ? 1.15 : upscale > 1.08 ? 0.45 : 0;
+    return {
+      cssW: w,
+      cssH: h,
+      displayArea: BUDGET.displayPixels,
+      texW,
+      texH,
+      viewW,
+      viewH,
+      fractalDirty: this.dirty,
+      family,
+      formula: this.fractal.formula,
+      cx: this.cx,
+      cy: this.cy,
+      radius: this.radius,
+      rotation: this.rotation || 0,
+      power: this.power,
+      bailout: this.bailout,
+      juliaRe: this.juliaRe,
+      juliaIm: this.juliaIm,
+      extra: this.extra,
+      iters,
+      steps: family === "ray" ? iters : BUDGET.defaultSteps,
+      rayIters,
+      trap: this.trap,
+      skipInterior: this.skipInterior,
+      ifsPoints: Math.round(BUDGET.maxIfsPoints * quality),
+      ifsIters: 18,
+      camera: orbitCamera(this.yaw || 0.5, this.pitch || 0.3, this.dist || 2.6),
+      yaw: this.yaw || 0,
+      pitch: this.pitch || 0,
+      dist: this.dist || 0,
+      frame: this.frameData,
+      frameKey: this.frameSig,
+      phase: this.phase,
+      density: this.density,
+      soft,
+      quality,
+      blur,
+      edge: this.post === 0 ? 0 : this.edge,
+      beat: offline ? 0 : this.beatPulse,
+      exposure: this.exposure,
+      palMix: this.palMix,
+      colorInterior: this.colorInterior,
+      post: this.post,
+      colorMode: this.colorMode,
+      capture: offline ? false : this.capture,
+    };
+  }
+
+  draw(soft) {
+    const state = this.renderState(soft);
+    const { texW, texH, viewW, viewH, iters, blur } = state;
     let pixels = null;
     try {
-      pixels = this.renderer.render({
-        cssW: w,
-        cssH: h,
-        displayArea: BUDGET.displayPixels,
-        texW,
-        texH,
-        viewW,
-        viewH,
-        fractalDirty: this.dirty,
-        family,
-        formula: this.fractal.formula,
-        cx: this.cx,
-        cy: this.cy,
-        radius: this.radius,
-        rotation: this.rotation || 0,
-        power: this.power,
-        bailout: this.bailout,
-        juliaRe: this.juliaRe,
-        juliaIm: this.juliaIm,
-        extra: this.extra,
-        iters: family === "ray" ? this.effectiveIters() : iters,
-        steps: family === "ray" ? iters : BUDGET.defaultSteps,
-        rayIters,
-        trap: this.trap,
-        skipInterior: this.skipInterior,
-        ifsPoints: Math.round(BUDGET.maxIfsPoints * this.detail * this.pixelScale),
-        ifsIters: 18,
-        camera: orbitCamera(this.yaw || 0.5, this.pitch || 0.3, this.dist || 2.6),
-        yaw: this.yaw || 0,
-        pitch: this.pitch || 0,
-        dist: this.dist || 0,
-        frame: this.frameData,
-        frameKey: this.frameSig,
-        phase: this.phase,
-        density: this.density,
-        soft,
-        quality: this.detail * this.pixelScale,
-        blur,
-        edge: this.post === 0 ? 0 : this.edge,
-        beat: this.beatPulse,
-        exposure: this.exposure,
-        palMix: this.palMix,
-        colorInterior: this.colorInterior,
-        post: this.post,
-        colorMode: this.colorMode,
-        capture: this.capture,
-      });
+      pixels = this.renderer.render(state);
       this.error = "";
     } catch (error) {
       this.error = error.message || String(error);
@@ -728,6 +781,7 @@ class Engine {
       fractals: FRACTALS.map((item, index) => ({ index, name: item.name, hotkey: item.hotkey || "" })),
       palettes: PALETTES.map((item, index) => ({ index, name: item.name })),
       modes: MODES,
+      movie: this.movie.snapshot(),
     });
   }
 
@@ -739,6 +793,10 @@ class Engine {
   onKey(event) {
     if (this.typing(event)) return;
     const key = event.key;
+    if (this.movie.exporting) {
+      if (key === "Escape") this.movie.cancelExport();
+      if (key !== "h" && key !== "H") return;
+    }
     if (key.startsWith("Arrow") || key === " ") event.preventDefault();
     if (event.repeat && !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "-", "=", "+", "_"].includes(key)) return;
     if (HOTKEY[key] !== undefined && !event.shiftKey) {
@@ -762,7 +820,8 @@ class Engine {
       return;
     }
     if (key === "Escape") {
-      this.setMode("zoom");
+      if (this.movie.playing) this.movie.stop();
+      else this.setMode("zoom");
       return;
     }
     const modeKey = MODES.find((item) => item.key.toLowerCase() === key.toLowerCase() && key.length === 1 && !event.metaKey && !event.ctrlKey);
@@ -826,6 +885,8 @@ class Engine {
     else if (key === "PageDown") this.setPower(this.powerT - 0.15);
     else if (key === "Delete" || key === "Backspace") this.removeStop(this.selectedStop);
     else if (key === "Enter" && event.shiftKey) this.addStop(0.5);
+    else if (key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) this.movie.addKey();
+    else if (key === "/") this.movie.togglePlay();
   }
 
   nudgePan(sx, sy) {
@@ -1073,6 +1134,7 @@ class Engine {
 
   onPointerDown(event) {
     this.canvas.focus();
+    this.movie.stop();
     this.buttons.add(event.button);
     this.mx = event.offsetX;
     this.my = event.offsetY;
