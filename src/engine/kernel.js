@@ -771,45 +771,72 @@ function fillIfs(buf, state) {
   }
 }
 
+export const RAY_FOCAL = 1.35;
+export const RAY_ITER_CAP = [12, 18, 12, 24];
+
+/** Radius of a sphere that holds every visible part of each 3D formula. */
+export function sceneRadius(shape, power) {
+  if (shape === 0) return 2;
+  if (shape === 1) {
+    const s = Math.abs(power);
+    return s > 1.15 ? Math.min(12, (2 * (s + 1)) / (s - 1)) : 12;
+  }
+  if (shape === 2) return 1.9;
+  return 2.6;
+}
+
 function fillRay(buf, state, y0, y1) {
   const cam = state.camera || { eye: [0, 0, 3], forward: [0, 0, -1], right: [1, 0, 0], up: [0, 1, 0] };
   const w = buf.w;
   const h = state.h || buf.h;
   const aspect = w / h;
-  const steps = Math.max(6, Math.min(18, state.steps | 0 || 12));
-  const iters = Math.max(3, Math.min(5, state.rayIters | 0 || 4));
+  const steps = Math.max(6, Math.min(72, state.steps | 0 || 12));
   const shape = state.formula | 0;
+  const iters = Math.max(3, Math.min(RAY_ITER_CAP[shape] || 5, state.rayIters | 0 || 4));
   const power = state.power || 8;
-  const far = shape === 1 ? 18 : 7.5;
   buf.source = 0;
   const ex = cam.eye[0];
   const ey = cam.eye[1];
   const ez = cam.eye[2];
+  const bound = sceneRadius(shape, power);
+  const c0 = ex * ex + ey * ey + ez * ez - bound * bound;
+  // A hit is anything closer than a fraction of the pixel footprint, so detail follows the camera in.
+  const pixel = (2 / (h * RAY_FOCAL)) * 0.6;
+  const floor = 1e-13 * (1 + Math.sqrt(ex * ex + ey * ey + ez * ez));
+  const glowGain = 0.07 * Math.min(1, 18 / steps);
   for (let y = y0; y < y1; y += 1) {
     const gy = h - 1 - y;
     const uvY = ((gy + 0.5) / h) * 2 - 1;
     const o = (y - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
       const uvX = ((x + 0.5) / w) * 2 - 1;
-      let dx = cam.forward[0] * 1.35 + cam.right[0] * uvX * aspect + cam.up[0] * uvY;
-      let dy = cam.forward[1] * 1.35 + cam.right[1] * uvX * aspect + cam.up[1] * uvY;
-      let dz = cam.forward[2] * 1.35 + cam.right[2] * uvX * aspect + cam.up[2] * uvY;
+      let dx = cam.forward[0] * RAY_FOCAL + cam.right[0] * uvX * aspect + cam.up[0] * uvY;
+      let dy = cam.forward[1] * RAY_FOCAL + cam.right[1] * uvX * aspect + cam.up[1] * uvY;
+      let dz = cam.forward[2] * RAY_FOCAL + cam.right[2] * uvX * aspect + cam.up[2] * uvY;
       const len = Math.hypot(dx, dy, dz) || 1;
       dx /= len;
       dy /= len;
       dz /= len;
-      let t = 0.2;
+      const idx = o + x;
+      const b = ex * dx + ey * dy + ez * dz;
+      const disc = b * b - c0;
+      const far = disc > 0 ? -b + Math.sqrt(disc) : -1;
+      if (far <= 0) {
+        paintEscape(buf, idx, false, 0, 0);
+        continue;
+      }
+      let t = Math.max(0, -b - Math.sqrt(disc));
       let glow = 0;
       let hit = false;
       let used = 0;
       for (let i = 0; i < steps && t <= far && !hit; i += 1) {
         const dist = mapScene(ex + dx * t, ey + dy * t, ez + dz * t, shape, power, iters);
-        glow += Math.exp(-Math.max(dist, 0) * 7) * 0.07;
+        const eps = Math.max(floor, t * pixel);
+        glow += Math.exp((-Math.max(dist, 0) / Math.max(t, eps)) * 17) * glowGain;
         used = i;
-        if (dist < 0.0025 + t * 0.002) hit = true;
-        else t += Math.min(0.4, Math.max(0.002, dist * 0.92));
+        if (dist < eps) hit = true;
+        else t += Math.min(0.4, Math.max(eps * 0.5, dist * 0.92));
       }
-      const idx = o + x;
       if (!hit && glow < 0.03) paintEscape(buf, idx, false, 0, 0);
       else {
         const shade = hit ? 1 - used / Math.max(steps, 1) : glow;
@@ -819,7 +846,7 @@ function fillRay(buf, state, y0, y1) {
   }
 }
 
-function mapScene(x, y, z, shape, power, iters) {
+export function mapScene(x, y, z, shape, power, iters) {
   if (shape === 0) return mapBulb(x, y, z, power, iters);
   if (shape === 1) return mapBox(x, y, z, power, iters);
   if (shape === 2) return mapMenger(x, y, z, iters);
@@ -834,12 +861,35 @@ function mapBulb(px, py, pz, power, iters) {
   let r = 0;
   const p = Math.max(2, Math.min(10, power));
   for (let i = 0; i < iters && r < 2; i += 1) {
-    r = Math.hypot(zx, zy, zz);
-    if (r > 0.0001 && r < 2) {
+    r = Math.sqrt(zx * zx + zy * zy + zz * zz);
+    if (r > 0.0001 && r < 2 && p === 8) {
+      // Power 8 by three angle doublings, with no inverse trig.
+      let ct = Math.max(-1, Math.min(1, zz / r));
+      let st = Math.sqrt(1 - ct * ct);
+      const rho = Math.sqrt(zx * zx + zy * zy);
+      let cf = rho > 0 ? zx / rho : 1;
+      let sf = rho > 0 ? zy / rho : 0;
+      for (let k = 0; k < 3; k += 1) {
+        const c2 = ct * ct - st * st;
+        st = 2 * st * ct;
+        ct = c2;
+        const f2 = cf * cf - sf * sf;
+        sf = 2 * sf * cf;
+        cf = f2;
+      }
+      const r2 = r * r;
+      const r4 = r2 * r2;
+      dr = r4 * r2 * r * 8 * dr + 1;
+      const zr = r4 * r4;
+      zx = zr * st * cf + px;
+      zy = zr * st * sf + py;
+      zz = zr * ct + pz;
+    } else if (r > 0.0001 && r < 2) {
       const theta = Math.acos(Math.max(-1, Math.min(1, zz / r))) * p;
       const phi = Math.atan2(zy, zx) * p;
-      dr = r ** (p - 1) * p * dr + 1;
-      const zr = r ** p;
+      const rp = r ** (p - 1);
+      dr = rp * p * dr + 1;
+      const zr = rp * r;
       const st = Math.sin(theta);
       zx = zr * st * Math.cos(phi) + px;
       zy = zr * st * Math.sin(phi) + py;
@@ -883,7 +933,7 @@ function mapMenger(px, py, pz, iters) {
   const dBox = sdBox(px, py, pz, 1.05);
   let d = dBox;
   let s = 1;
-  const n = Math.min(4, iters);
+  const n = iters;
   for (let i = 0; i < n; i += 1) {
     let ax = ((px * s) % 2) - 1;
     let ay = ((py * s) % 2) - 1;
@@ -916,7 +966,7 @@ function mapTetra(px, py, pz, iters) {
   let y = py;
   let z = pz;
   let scale = 1;
-  const n = Math.min(6, iters);
+  const n = iters;
   for (let i = 0; i < n; i += 1) {
     if (x + y < 0) {
       const tx = -y;

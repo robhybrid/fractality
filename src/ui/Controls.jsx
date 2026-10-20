@@ -58,7 +58,7 @@ export function Controls({ snap, engine }) {
       </header>
       <p className="coords">
         {snap.family === "ray"
-          ? `yaw ${snap.yaw.toFixed(2)} · pitch ${snap.pitch.toFixed(2)} · dist ${snap.dist.toFixed(2)}`
+          ? `yaw ${snap.yaw.toFixed(2)} · pitch ${snap.pitch.toFixed(2)} · gap ${snap.gap.toExponential(2)}`
           : snap.frameDepth
             ? `depth ${snap.frameDepth} · zoom ${zoomText(snap.zoomLog10)}`
             : `${snap.cx.toFixed(5)}  ${snap.cy >= 0 ? "+" : "−"} ${Math.abs(snap.cy).toFixed(5)}i · r ${snap.radius.toExponential(2)}`}
@@ -106,7 +106,11 @@ export function Controls({ snap, engine }) {
           </button>
         ))}
       </div>
-      <p className="hint">{snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.</p>
+      <p className="hint">
+        {snap.family === "ray"
+          ? "Hold to fly toward the surface under the cursor. Right-click backs away. Shift-drag or arrows orbit. R returns home."
+          : `${snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.`}
+      </p>
 
       <Slider label="Power" min={-2} max={10} step={0.01} value={snap.power} onChange={(v) => engine.setPower(v)} />
       <Slider
