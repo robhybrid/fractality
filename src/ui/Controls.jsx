@@ -105,7 +105,11 @@ export function Controls({ snap, engine }) {
           </button>
         ))}
       </div>
-      <p className="hint">{snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.</p>
+      <p className="hint">
+        {snap.family === "ray"
+          ? "Hold to fly toward the surface under the cursor. Right-click backs away. Shift-drag or arrows orbit. R returns home."
+          : `${snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.`}
+      </p>
 
       <Slider label="Power" min={-2} max={10} step={0.01} value={snap.power} onChange={(v) => engine.setPower(v)} />
       <Slider

@@ -195,10 +195,7 @@ class Engine {
       cy: this.cy,
       logR: this.logR,
       rotation: this.rotation,
-      yaw: this.yaw,
-      pitch: this.pitch,
-      eye: this.eye?.slice(),
-      gapIters: this.gapIters,
+      ...(f.family === "ray" ? { yaw: this.yawT, pitch: this.pitchT, eye: this.eyeT.slice(), gapIters: this.gapIters } : {}),
       power: this.powerT,
       bail: this.bailT,
       juliaRe: this.juliaReT,
@@ -379,8 +376,8 @@ class Engine {
       }
       if (toward) {
         const aim = angles(dir);
-        this.yaw += wrapAngle(aim.yaw - this.yaw) * k * 0.6;
-        this.pitch = clampPitch(this.pitch + (aim.pitch - this.pitch) * k * 0.6);
+        this.yaw += wrapAngle(aim.yaw - this.yaw) * k * 0.3;
+        this.pitch = clampPitch(this.pitch + (aim.pitch - this.pitch) * k * 0.3);
       }
     } else {
       const move = Math.max(gap, this.homeGap * 0.02) * (factor - 1) * 0.8;
