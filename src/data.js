@@ -17,6 +17,7 @@ export const COLOR_MODES = [
   { id: "gradient", label: "Gradient" },
   { id: "eci", label: "Exponential cyclic" },
   { id: "histogram", label: "Histogram" },
+  { id: "distance", label: "Distance" },
 ];
 
 const home = (x, y, r) => ({ x, y, r, rot: 0 });

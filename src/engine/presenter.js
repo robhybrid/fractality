@@ -1,6 +1,7 @@
 import { BUDGET } from "../budget.js";
 import { antialiasEligible } from "./antialias.js";
 import { fitSize } from "./color.js";
+import { applyDistance, paintDistance, storeDistance } from "./distance.js";
 import { createBuffer, fillAll, fillRows, shadeLevels } from "./kernel.js";
 import { buildLut, interiorColor, paint } from "./shade.js";
 
@@ -20,6 +21,7 @@ function paramKey(s) {
     s.iters | 0,
     q(s.trap || 0, 3),
     s.skipInterior ? 1 : 0,
+    s.dem ? (s.deKoebe ? 2 : 1) : 0,
     s.frameKey || "",
     s.family === "ray" ? `${s.camKey}:${s.steps}:${s.rayIters}` : "",
   ].join(":");
@@ -181,6 +183,7 @@ export class Presenter {
 
   gpuEligible(state, h) {
     if (!this.gpu || state.family !== "escape" || state.formula >= 8) return false;
+    if (state.dem) return false;
     if ((state.iters | 0) > 48) return false;
     return (2 * state.radius) / h > 3e-6;
   }
@@ -235,7 +238,13 @@ export class Presenter {
       extra: src.extra.slice(b0 * w, b1 * w),
       alpha: src.alpha.slice(b0 * w, b1 * w),
     };
-    worker.postMessage({ gen: job.gen, y0, y1, state: job.state, base }, [base.iter.buffer, base.extra.buffer, base.alpha.buffer]);
+    const transfer = [base.iter.buffer, base.extra.buffer, base.alpha.buffer];
+    if (src.dist) {
+      base.dist = src.dist.slice(b0 * w, b1 * w);
+      base.lit = src.lit.slice(b0 * w, b1 * w);
+      transfer.push(base.dist.buffer, base.lit.buffer);
+    }
+    worker.postMessage({ gen: job.gen, y0, y1, state: job.state, base }, transfer);
   }
 
   /** Final pass once a frame has settled at full size: extra samples on band edges. */
@@ -247,6 +256,10 @@ export class Presenter {
     out.extra.set(buf.extra);
     out.alpha.set(buf.alpha);
     out.level = buf.level;
+    if (buf.dist) {
+      out.dist = buf.dist.slice();
+      out.lit = buf.lit.slice();
+    }
     out.band = new Float32Array(w * h);
     out.cover = new Uint8Array(w * h);
     const job = {
@@ -284,6 +297,7 @@ export class Presenter {
     job.buf.iter.set(msg.iter, off);
     job.buf.extra.set(msg.extra, off);
     job.buf.alpha.set(msg.alpha, off);
+    storeDistance(job.buf, msg, off);
     if (msg.aa) {
       job.buf.band.set(msg.band, off);
       job.buf.cover.set(msg.cover, off);
@@ -414,11 +428,16 @@ export class Presenter {
     const phase = state.phase || 0;
     const shown = this.shown;
     const phaseStep = Math.floor((phase - Math.floor(phase)) * 1024);
-    const key = `${shown.serial}:${lutKey}:${phaseStep}:${q(state.density, 5)}:${state.colorInterior ? 1 : 0}:${state.colorMode | 0}`;
+    const key = `${shown.serial}:${lutKey}:${phaseStep}:${q(state.density, 5)}:${state.colorInterior ? 1 : 0}:${state.colorMode | 0}:${state.deShade || ""}`;
     if (key === this.paintKey) return;
     this.paintKey = key;
     const interior = interiorColor(this.lutPal, phase, state.colorInterior, gain);
-    paint(shown.buf, this.out32, this.lut, phase, state.density ?? 0.045, interior, state.colorMode | 0, shown.state?.iters || state.iters || 100);
+    const density = state.density ?? 0.045;
+    if (state.deShade === "distance" && shown.buf.dist) paintDistance(shown.buf, this.out32, this.lut, phase, density, interior);
+    else {
+      paint(shown.buf, this.out32, this.lut, phase, density, interior, state.colorMode | 0, shown.state?.iters || state.iters || 100);
+      if (state.deShade && shown.buf.dist) applyDistance(shown.buf, this.out32, interior);
+    }
     this.sctx.putImageData(this.image, 0, 0);
   }
 

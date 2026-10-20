@@ -48,6 +48,7 @@ class Engine {
     this.post = 1;
     this.colorMode = 0;
     this.colorInterior = false;
+    this.deRelief = false;
     this.autoIter = true;
     this.iterBias = 48;
     this.breathe = false;
@@ -703,7 +704,8 @@ class Engine {
         palMix: this.palMix,
         colorInterior: this.colorInterior,
         post: this.post,
-        colorMode: this.colorMode,
+        colorMode: this.distanceMode() ? 1 : this.colorMode,
+        ...this.distanceState(),
         capture: this.capture,
       });
       this.error = "";
@@ -801,6 +803,7 @@ class Engine {
       post: this.post,
       colorMode: this.colorMode,
       colorModes: COLOR_MODES,
+      deRelief: this.deRelief,
       detail: this.detail,
       paused: this.paused,
       stops: this.stops,
@@ -993,6 +996,22 @@ class Engine {
 
   setColorMode(value) {
     this.colorMode = (value + COLOR_MODES.length) % COLOR_MODES.length;
+    this.publish(true);
+  }
+
+  distanceMode() {
+    return COLOR_MODES[this.colorMode]?.id === "distance";
+  }
+
+  /** Distance estimation is computed for the Distance color mode, or for relief shading over any mode. */
+  distanceState() {
+    const distance = this.distanceMode();
+    if (!distance && !this.deRelief) return { dem: false, deShade: "" };
+    return { dem: true, deKoebe: distance, deShade: distance ? "distance" : "relief" };
+  }
+
+  setDeRelief(value) {
+    this.deRelief = value;
     this.publish(true);
   }
 

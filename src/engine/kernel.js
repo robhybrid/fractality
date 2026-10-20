@@ -1,3 +1,4 @@
+import { demSupported, fillDistance } from "./distance.js";
 import { frameInfo, GASKET, REACH, SPAN } from "./frames.js";
 
 const C1 = [0, 0, 0];
@@ -32,6 +33,7 @@ export function fillRows(buf, state, y0, y1) {
   }
   if (state.formula >= 12) fillShape(buf, state, y0, y1);
   else if (state.formula >= 8) fillSpecial(buf, state, y0, y1);
+  else if (state.dem && demSupported(state)) fillDistance(buf, state, y0, y1);
   else fillEscape(buf, state, y0, y1);
 }
 
@@ -39,7 +41,7 @@ function clampIter(n, cap) {
   return Math.max(1, Math.min(cap, n | 0));
 }
 
-function planeOf(state) {
+export function planeOf(state) {
   const rotation = state.rotation || 0;
   return {
     c: Math.cos(rotation),
@@ -53,7 +55,7 @@ function planeOf(state) {
   };
 }
 
-function rowStart(p, y) {
+export function rowStart(p, y) {
   const ny = 1 - ((y + 0.5) / p.h) * 2;
   const py = ny * p.radius;
   const px0 = ((0.5 / p.w) * 2 - 1) * p.aspect * p.radius;
@@ -66,14 +68,14 @@ function rowStart(p, y) {
   };
 }
 
-function insideSet(x, y) {
+export function insideSet(x, y) {
   const q = (x - 0.25) * (x - 0.25) + y * y;
   if (q * (q + (x - 0.25)) <= 0.25 * y * y) return true;
   const dx = x + 1;
   return dx * dx + y * y <= 0.0625;
 }
 
-function cpow(zx, zy, p) {
+export function cpow(zx, zy, p) {
   if (Math.abs(p - 2) < 0.0008) return [zx * zx - zy * zy, 2 * zx * zy];
   if (Math.abs(p - 3) < 0.0008) {
     const sx = zx * zx - zy * zy;
@@ -87,7 +89,7 @@ function cpow(zx, zy, p) {
   return [Math.cos(a) * r, Math.sin(a) * r];
 }
 
-function smoothIter(i, zx, zy, bail, power) {
+export function smoothIter(i, zx, zy, bail, power) {
   const mag = Math.hypot(zx, zy);
   const logBail = Math.log(Math.sqrt(bail));
   const logMag = Math.log(mag);
