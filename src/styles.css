@@ -1,0 +1,142 @@
+:root {
+  color-scheme: dark;
+  --ink: #f3efe6;
+  --muted: #b0a89c;
+  --line: rgba(255, 255, 255, 0.14);
+  --panel: rgba(10, 12, 18, 0.78);
+  --mint: #8ee7c8;
+  --hot: #ffb15a;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* { box-sizing: border-box; }
+html, body, #root, .app { height: 100%; margin: 0; }
+body { background: #07080c; overflow: hidden; }
+canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+  outline: none;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+.panel {
+  position: fixed;
+  z-index: 2;
+  top: 12px;
+  left: 12px;
+  bottom: 12px;
+  width: min(340px, calc(100vw - 24px));
+  overflow: auto;
+  padding: 16px 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+  color: var(--ink);
+}
+.title { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.mark {
+  margin: 0;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--mint);
+}
+h1 { margin: 2px 0 0; font-size: 26px; font-weight: 620; letter-spacing: -0.03em; }
+.fps {
+  min-width: 64px;
+  text-align: right;
+  color: var(--muted);
+}
+.fps strong { display: block; color: var(--ink); font-size: 22px; line-height: 1; }
+.fps.hot strong { color: var(--hot); }
+.coords, .status, .hint, .foot { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.livebar {
+  height: 8px;
+  margin: 8px 0 4px;
+  border-radius: 99px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+.coords { font-variant-numeric: tabular-nums; }
+.field, .slider, .check { display: block; margin: 10px 0; font-size: 12px; color: var(--muted); }
+.field select, .row button, .toggles button, .chips button {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.slider span { display: flex; justify-content: space-between; }
+.slider b { color: var(--ink); font-weight: 560; }
+.slider input { width: 100%; accent-color: var(--mint); }
+.slider.disabled { opacity: 0.55; }
+.check { display: flex; gap: 8px; align-items: center; }
+.modes, .chips, .toggles, .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.modes button, .chips button, .toggles button, .row button { width: auto; margin: 0; }
+.modes button.on, .chips button.on, .toggles button.on {
+  border-color: transparent;
+  background: var(--mint);
+  color: #10221c;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% { filter: brightness(1.15); }
+}
+kbd {
+  display: inline-block;
+  min-width: 1.1em;
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+.gradient {
+  position: relative;
+  height: 28px;
+  margin: 10px 0;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+.stop {
+  position: absolute;
+  top: -4px;
+  width: 12px;
+  height: 36px;
+  padding: 0;
+  border: 2px solid white;
+  border-radius: 4px;
+  transform: translateX(-50%);
+}
+.stop.on { outline: 2px solid var(--mint); }
+.row input[type="color"] { width: 42px; height: 34px; padding: 0; border: 0; background: transparent; }
+.meter { display: flex; align-items: flex-end; gap: 4px; height: 36px; margin: 8px 0; }
+.meter i {
+  display: block;
+  width: 7px;
+  min-height: 2px;
+  background: var(--mint);
+  border-radius: 99px;
+}
+.meter span { margin-left: 8px; color: var(--muted); font-size: 12px; align-self: center; }
+.keys { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; padding: 0; margin: 8px 0; list-style: none; font-size: 12px; color: var(--muted); }
+details summary { cursor: pointer; color: var(--ink); }
+.error {
+  position: fixed;
+  z-index: 3;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #3a1420;
+  color: white;
+}
