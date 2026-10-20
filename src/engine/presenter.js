@@ -121,6 +121,8 @@ export class Presenter {
     this.motionShare = 0.3;
     this.gpu = null;
     this.gpuState = "idle";
+    this.glp = null;
+    this.glpState = "idle";
     this.dead = false;
     this.workers = [];
     this.idle = [];
@@ -407,6 +409,7 @@ export class Presenter {
     if (this.job?.kind === "main") this.stepMain(this.job);
     this.draw(state, W, H);
     if (this.gpuState === "idle") this.armGpu();
+    if (this.glpState === "idle") this.armGlPresent();
     const result = {
       pending: !!this.job,
       viewW: this.shown?.buf.w || 0,
@@ -422,7 +425,7 @@ export class Presenter {
     return result;
   }
 
-  colorize(state) {
+  ensureLut(state) {
     const gain = (state.exposure || 1) * (1 + 0.38 * (state.beat || 0));
     const lutKey = `${this.palVersion}:${q(state.palMix || 0, 3)}:${state.post}:${q(state.edge || 0, 3)}:${q(gain, 3)}`;
     if (lutKey !== this.lutKey) {
@@ -431,6 +434,11 @@ export class Presenter {
       this.lutPal = built.pal;
       this.lutKey = lutKey;
     }
+    return { gain, lutKey };
+  }
+
+  colorize(state) {
+    const { gain, lutKey } = this.ensureLut(state);
     const phase = state.phase || 0;
     const shown = this.shown;
     const phaseStep = Math.floor((phase - Math.floor(phase)) * 1024);
@@ -442,17 +450,11 @@ export class Presenter {
     this.sctx.putImageData(this.image, 0, 0);
   }
 
-  draw(state, W, H) {
-    if (!this.shown) return;
-    this.colorize(state);
-    const ctx = this.ctx;
+  /** Buffer-pixel to screen-pixel affine [a, b, c, d, e, f], or null when it is one to one. */
+  viewTransform(state, W, H) {
     const { buf, view } = this.shown;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "medium";
     if (view.family === "ray" || state.family === "ray") {
-      ctx.drawImage(this.scratch, 0, 0, W, H);
-      return;
+      return buf.w === W && buf.h === H ? null : [W / buf.w, 0, 0, H / buf.h, 0, 0];
     }
     const map = this.mapper(view, buf.w, buf.h, state, W, H);
     const p00 = map(0, 0);
@@ -463,15 +465,125 @@ export class Presenter {
     const c = p01[0] - p00[0];
     const d = p01[1] - p00[1];
     const exact = Math.abs(a * buf.w - W) < 0.5 && Math.abs(d * buf.h - H) < 0.5 && Math.abs(b) < 1e-6 && Math.abs(c) < 1e-6 && Math.abs(p00[0]) < 0.5 && Math.abs(p00[1]) < 0.5;
-    if (exact) {
+    if (exact && buf.w === W && buf.h === H) return null;
+    if (exact) return [W / buf.w, 0, 0, H / buf.h, 0, 0];
+    return [a, b, c, d, p00[0], p00[1]];
+  }
+
+  draw(state, W, H) {
+    if (!this.shown) return;
+    const m = this.viewTransform(state, W, H);
+    if (this.glp && this.drawGl(state, W, H, m)) return;
+    this.colorize(state);
+    const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "medium";
+    if (!m || (m[1] === 0 && m[2] === 0 && m[4] === 0 && m[5] === 0 && Math.abs(m[0] * this.shown.buf.w - W) < 0.5 && Math.abs(m[3] * this.shown.buf.h - H) < 0.5)) {
       ctx.drawImage(this.scratch, 0, 0, W, H);
       return;
     }
     ctx.fillStyle = "#07080c";
     ctx.fillRect(0, 0, W, H);
-    ctx.setTransform(a, b, c, d, p00[0], p00[1]);
+    ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
     ctx.drawImage(this.scratch, 0, 0);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  /** Palette cycling and reprojection on the GPU; false hands the frame back to the 2D path. */
+  drawGl(state, W, H, m) {
+    const glp = this.glp;
+    const shown = this.shown;
+    const { buf } = shown;
+    if (!glp.fits(buf.w, buf.h, W, H)) return false;
+    try {
+      const { gain, lutKey } = this.ensureLut(state);
+      if (lutKey !== this.glLutKey) {
+        glp.setLut(this.lut);
+        this.glLutKey = lutKey;
+      }
+      const density = state.density ?? 0.045;
+      const mode = state.colorMode | 0;
+      const maxIter = shown.state?.iters || state.iters || 100;
+      const frameKey = `${shown.serial}:${q(density, 5)}:${mode}:${maxIter}`;
+      if (frameKey !== this.glFrameKey) {
+        glp.setFrame(buf, mode, density, maxIter);
+        this.glFrameKey = frameKey;
+      }
+      const phase = state.phase || 0;
+      const phaseStep = Math.floor((phase - Math.floor(phase)) * 1024);
+      const interior = interiorColor(this.lutPal, phase, state.colorInterior, gain);
+      const key = `${frameKey}:${lutKey}:${phaseStep}:${interior}:${m ? m.map((v) => v.toFixed(4)).join(",") : "1"}:${W}x${H}`;
+      if (key === this.glDrawKey && !state.capture) return true;
+      this.glDrawKey = key;
+      const ok = glp.draw(W, H, m, phase, interior, [7, 8, 12]);
+      if (this.glOverlay) {
+        const place = `${state.cssW}x${state.cssH}:${W}x${H}`;
+        if (place !== this.glPlace) {
+          glp.place(this.canvas);
+          this.glPlace = place;
+        }
+      }
+      if (!this.glOverlay || state.capture) {
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        this.ctx.drawImage(glp.canvas, 0, 0);
+      }
+      if (!ok || glp.lost) this.dropGlPresent();
+      return true;
+    } catch {
+      this.dropGlPresent();
+      return false;
+    }
+  }
+
+  dropGlPresent() {
+    try {
+      this.glp?.destroy();
+    } catch {
+      /* already gone */
+    }
+    this.glp = null;
+    this.glpState = "failed";
+    this.glDrawKey = "";
+    this.paintKey = "";
+  }
+
+  armGlPresent() {
+    if (this.dead) return;
+    this.glpState = "pending";
+    const pick = new URLSearchParams(location.search).get("present");
+    if (pick === "2d") {
+      this.glpState = "off";
+      return;
+    }
+    import("./glpresent.js")
+      .then(({ createGlPresent, glPresentAgrees }) => {
+        if (this.dead) return;
+        let glp = null;
+        try {
+          glp = createGlPresent();
+          if (glp && !glPresentAgrees(glp)) {
+            glp.destroy();
+            glp = null;
+          }
+        } catch {
+          glp = null;
+        }
+        if (!glp) {
+          this.glpState = "failed";
+          return;
+        }
+        this.glp = glp;
+        this.glpState = "ready";
+        this.glOverlay = pick !== "blit" && glp.attach(this.canvas);
+        this.glPlace = "";
+        this.glLutKey = "";
+        this.glFrameKey = "";
+        this.glDrawKey = "";
+      })
+      .catch(() => {
+        this.glpState = "failed";
+      });
   }
 
   mapper(view, bw, bh, state, W, H) {
@@ -547,6 +659,7 @@ export class Presenter {
   destroy() {
     this.dead = true;
     this.disableGpu();
+    this.dropGlPresent();
     for (const worker of this.workers) worker.terminate();
     this.workers = [];
   }
