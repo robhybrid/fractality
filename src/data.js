@@ -20,16 +20,20 @@ export const COLOR_MODES = [
 const home = (x, y, r) => ({ x, y, r, rot: 0 });
 
 export const FRACTALS = [
-  { id: "mandelbrot", name: "Mandelbrot", family: "escape", formula: 0, hotkey: "1", power: 2, bail: 64, home: home(-0.75, 0, 1.35) },
-  { id: "julia", name: "Julia", family: "escape", formula: 1, hotkey: "2", power: 2, bail: 64, home: home(0, 0, 1.55), julia: [-0.8, 0.156] },
-  { id: "burning", name: "Burning Ship", family: "escape", formula: 2, hotkey: "3", power: 2, bail: 64, home: home(-0.4, -0.55, 1.55) },
-  { id: "tricorn", name: "Tricorn", family: "escape", formula: 3, hotkey: "4", power: 2, bail: 64, home: home(0, 0, 1.7) },
-  { id: "celtic", name: "Celtic", family: "escape", formula: 4, hotkey: "5", power: 2, bail: 64, home: home(-0.5, 0, 1.55) },
-  { id: "buffalo", name: "Buffalo", family: "escape", formula: 5, hotkey: "6", power: 2, bail: 64, home: home(-0.35, 0, 1.5) },
-  { id: "perp", name: "Perpendicular Ship", family: "escape", formula: 6, hotkey: "7", power: 2, bail: 64, home: home(-0.4, -0.5, 1.55) },
-  { id: "phoenix", name: "Phoenix", family: "escape", formula: 7, hotkey: "8", power: 2, bail: 64, home: home(0, 0, 1.6), julia: [0.566, 0], extra: -0.5 },
-  { id: "newton", name: "Newton", family: "escape", formula: 8, hotkey: "9", power: 3, bail: 64, home: home(0, 0, 1.45) },
-  { id: "nova", name: "Nova", family: "escape", formula: 9, hotkey: "0", power: 3, bail: 16, home: home(0, 0, 1.15), extra: 1 },
+  { id: "mandelbrot", name: "Mandelbrot", family: "escape", formula: 0, power: 2, bail: 64, home: home(-0.75, 0, 1.35) },
+  { id: "julia", name: "Julia", family: "escape", formula: 1, power: 2, bail: 64, home: home(0, 0, 1.55), julia: [-0.8, 0.156] },
+  { id: "bulb", name: "Mandelbulb", family: "ray", formula: 0, power: 8, bail: 64, home: { yaw: 0.55, pitch: 0.35, dist: 2.55 } },
+  { id: "box", name: "Mandelbox", family: "ray", formula: 1, power: -1.5, bail: 64, home: { yaw: 0.45, pitch: 0.4, dist: 5.2 } },
+  { id: "menger", name: "Menger Sponge", family: "ray", formula: 2, power: 3, bail: 64, home: { yaw: 0.6, pitch: 0.42, dist: 3.3 } },
+  { id: "tetra", name: "Sierpinski Tetrahedron", family: "ray", formula: 3, power: 2, bail: 64, home: { yaw: 0.7, pitch: 0.38, dist: 2.7 } },
+  { id: "burning", name: "Burning Ship", family: "escape", formula: 2, power: 2, bail: 64, home: home(-0.4, -0.55, 1.55) },
+  { id: "tricorn", name: "Tricorn", family: "escape", formula: 3, power: 2, bail: 64, home: home(0, 0, 1.7) },
+  { id: "celtic", name: "Celtic", family: "escape", formula: 4, power: 2, bail: 64, home: home(-0.5, 0, 1.55) },
+  { id: "buffalo", name: "Buffalo", family: "escape", formula: 5, power: 2, bail: 64, home: home(-0.35, 0, 1.5) },
+  { id: "perp", name: "Perpendicular Ship", family: "escape", formula: 6, power: 2, bail: 64, home: home(-0.4, -0.5, 1.55) },
+  { id: "phoenix", name: "Phoenix", family: "escape", formula: 7, power: 2, bail: 64, home: home(0, 0, 1.6), julia: [0.566, 0], extra: -0.5 },
+  { id: "newton", name: "Newton", family: "escape", formula: 8, power: 3, bail: 64, home: home(0, 0, 1.45) },
+  { id: "nova", name: "Nova", family: "escape", formula: 9, power: 3, bail: 16, home: home(0, 0, 1.15), extra: 1 },
   { id: "magnet", name: "Magnet", family: "escape", formula: 10, power: 2, bail: 64, home: home(1, 0, 2.4) },
   { id: "lyapunov", name: "Lyapunov", family: "escape", formula: 11, power: 2, bail: 4, home: home(2, 2, 2.05) },
   { id: "sierpinski", name: "Sierpinski Triangle", family: "shape", formula: 12, frame: "tri", power: 2, bail: 64, home: home(0.5, 0.433, 0.62) },
@@ -40,11 +44,11 @@ export const FRACTALS = [
   { id: "fern", name: "Barnsley Fern", family: "ifs", formula: 0, power: 2, bail: 64, home: home(0, 4.7, 5.5) },
   { id: "dragon", name: "Dragon Curve", family: "ifs", formula: 1, power: 2, bail: 64, home: home(0.55, 0.32, 0.72) },
   { id: "maple", name: "Maple Leaf", family: "ifs", formula: 2, power: 2, bail: 64, home: home(0.05, 0.1, 2.55) },
-  { id: "bulb", name: "Mandelbulb", family: "ray", formula: 0, power: 8, bail: 64, home: { yaw: 0.55, pitch: 0.35, dist: 2.55 } },
-  { id: "box", name: "Mandelbox", family: "ray", formula: 1, power: -1.5, bail: 64, home: { yaw: 0.45, pitch: 0.4, dist: 5.2 } },
-  { id: "menger", name: "Menger Sponge", family: "ray", formula: 2, power: 3, bail: 64, home: { yaw: 0.6, pitch: 0.42, dist: 3.3 } },
-  { id: "tetra", name: "Sierpinski Tetrahedron", family: "ray", formula: 3, power: 2, bail: 64, home: { yaw: 0.7, pitch: 0.38, dist: 2.7 } },
 ];
+
+FRACTALS.forEach((fractal, index) => {
+  if (index < 10) fractal.hotkey = String((index + 1) % 10);
+});
 
 export const PRESETS = {
   mandelbrot: [
