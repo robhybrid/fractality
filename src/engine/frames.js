@@ -99,18 +99,24 @@ export function shiftFrame(kind, digits, du, dv) {
  * One step toward the frame that fits the screen: shift sideways so the view
  * center is inside the frame cell, go up while the screen is larger than the
  * cell, go down while it is small enough that a child cell still fits it.
+ * Past the root's edge the frame cannot follow the center; once the center
+ * is a whole cell away the screen is all outside, so it stops descending.
  * `reach` is the distance from the view center to a screen corner. Returns
  * null when the frame already fits, otherwise the new digits and the map
  * new = (old - [ox, oy]) * S to apply to view coordinates.
  */
 export function renormStep(kind, digits, cx, cy, reach) {
   const spec = SPEC[kind];
+  const [u, v] = toLattice(kind, cx, cy);
   if (digits.length) {
-    const [u, v] = toLattice(kind, cx, cy);
     const du = Math.floor(u);
     const dv = Math.floor(v);
-    if (du || dv) {
-      const moved = shiftFrame(kind, digits, du, dv);
+    for (const [su, sv] of [
+      [du, 0],
+      [0, dv],
+    ]) {
+      if (!su && !sv) continue;
+      const moved = shiftFrame(kind, digits, su, sv);
       if (moved) return { digits: moved.digits, S: 1, ox: moved.ox, oy: moved.oy };
     }
     if (reach > spec.up) {
@@ -119,7 +125,8 @@ export function renormStep(kind, digits, cx, cy, reach) {
       return { digits: next, S: 1 / spec.scale, ox: -ox * spec.scale, oy: -oy * spec.scale };
     }
   }
-  if (reach < spec.down) {
+  const near = u >= -1 && v >= -1 && u < 2 && v < 2;
+  if (reach < spec.down && near) {
     const child = childFor(kind, cx, cy);
     return { digits: [...digits, child.digit], S: spec.scale, ox: child.ox, oy: child.oy };
   }

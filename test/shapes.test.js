@@ -263,6 +263,44 @@ test("every frame change during a zoom and pan leaves the image unchanged", (t) 
   }
 });
 
+test("holding zoom at off-center points, even past the root's edge, stays on structure", (t) => {
+  const w = 1024;
+  const h = 640;
+  for (const [sx, sy] of [
+    [300, 500],
+    [511, 541],
+    [100, 100],
+    [900, 620],
+  ]) {
+    const view = settle("tri", { digits: [], cx: 0.5, cy: 0.433, radius: 0.62, w, h });
+    let info = frameInfo("tri", view.digits);
+    for (let tick = 0; tick < 1500; tick += 1) {
+      const f = Math.exp(-2.2 / 60);
+      const mx = view.cx + ((sx / w) * 2 - 1) * (w / h) * view.radius;
+      const my = view.cy + (1 - (sy / h) * 2) * view.radius;
+      view.cx = mx + (view.cx - mx) * f;
+      view.cy = my + (view.cy - my) * f;
+      view.radius *= f;
+      const anchor = anchorPoint(info, view.cx, view.cy);
+      if (anchor) {
+        const pull = Math.min(1, (1 - f) * 2.5);
+        view.cx += (anchor[0] - view.cx) * pull;
+        view.cy += (anchor[1] - view.cy) * pull;
+      }
+      const depth = view.digits.length;
+      settle("tri", view);
+      if (view.digits.length !== depth) info = frameInfo("tri", view.digits);
+      assert.ok(Math.abs(view.cx) < 4 && Math.abs(view.cy) < 4, `center stays local (${view.cx}, ${view.cy})`);
+    }
+    const buf = createBuffer(192, 120);
+    fillAll(buf, localState(12, "tri", { ...view, w: 192, h: 120 }, 0));
+    const s = structure(buf);
+    t.diagnostic(`mouse (${sx}, ${sy}): depth ${view.digits.length}, ${s.tones} hole colors, ${(s.lace * 100).toFixed(1)}% lace`);
+    assert.ok(view.digits.length > 70);
+    assert.ok(s.tones >= 6 && s.lace > 0.003);
+  }
+});
+
 test("row bands fill the same pixels as a full frame", () => {
   const view = settle("tri", { digits: [], cx: 0.5 + 1e-6, cy: 1e-6, radius: 1e-5, w: W, h: HT });
   const state = localState(12, "tri", view, 0.2);
