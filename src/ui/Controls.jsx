@@ -41,6 +41,22 @@ function zoomText(log10) {
   return `${(10 ** (log10 - e)).toFixed(1)}e${e}×`;
 }
 
+function clip(text, keep = 18) {
+  return text.length > keep ? `${text.slice(0, keep)}…` : text;
+}
+
+function coordsText(snap) {
+  if (snap.family === "ray") return `yaw ${snap.yaw.toFixed(2)} · pitch ${snap.pitch.toFixed(2)} · dist ${snap.dist.toFixed(2)}`;
+  if (snap.frameDepth) return `depth ${snap.frameDepth} · zoom ${zoomText(snap.zoomLog10)}`;
+  if (snap.center) {
+    const [re, im] = snap.center;
+    const neg = im.startsWith("-");
+    return `${clip(re)} ${neg ? "−" : "+"} ${clip(neg ? im.slice(1) : im)}i · zoom ${zoomText(snap.zoomLog10)}`;
+  }
+  const zoom = snap.zoomLog10 > 3 ? ` · zoom ${zoomText(snap.zoomLog10)}` : "";
+  return `${snap.cx.toFixed(5)}  ${snap.cy >= 0 ? "+" : "−"} ${Math.abs(snap.cy).toFixed(5)}i · r ${snap.radius.toExponential(2)}${zoom}`;
+}
+
 export function Controls({ snap, engine }) {
   if (!engine) return null;
   const stop = snap.stops[snap.selectedStop] || snap.stops[0];
@@ -56,12 +72,8 @@ export function Controls({ snap, engine }) {
           <span>fps</span>
         </div>
       </header>
-      <p className="coords">
-        {snap.family === "ray"
-          ? `yaw ${snap.yaw.toFixed(2)} · pitch ${snap.pitch.toFixed(2)} · dist ${snap.dist.toFixed(2)}`
-          : snap.frameDepth
-            ? `depth ${snap.frameDepth} · zoom ${zoomText(snap.zoomLog10)}`
-            : `${snap.cx.toFixed(5)}  ${snap.cy >= 0 ? "+" : "−"} ${Math.abs(snap.cy).toFixed(5)}i · r ${snap.radius.toExponential(2)}`}
+      <p className="coords" title={snap.center ? `${snap.center[0]}\n${snap.center[1]}\nr ${snap.radius.toExponential(3)}` : undefined}>
+        {coordsText(snap)}
       </p>
       <div
         className="livebar"
@@ -75,6 +87,7 @@ export function Controls({ snap, engine }) {
         {snap.viewW}×{snap.viewH} · {snap.iters} {snap.family === "ray" ? "steps" : "iters"}
         {" · "}
         {snap.backend || "CPU"}
+        {snap.deep ? " · perturbation" : ""}
         {snap.throttled ? " · easing off, frames were slow" : ""}
         {snap.paused ? " · paused" : ""}
       </p>
@@ -108,19 +121,30 @@ export function Controls({ snap, engine }) {
       <p className="hint">{snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.</p>
 
       <Slider label="Power" min={-2} max={10} step={0.01} value={snap.power} onChange={(v) => engine.setPower(v)} />
-      <Slider
-        label="Iterations"
-        min={24}
-        max={400}
-        step={1}
-        value={snap.autoIter ? snap.iters : snap.iterBias}
-        disabled={snap.autoIter}
-        format={(v) => String(Math.round(v))}
-        onChange={(v) => engine.setIterBias(v)}
-      />
+      {snap.autoIter ? (
+        <Slider
+          label="Iterations"
+          min={-2}
+          max={3}
+          step={0.05}
+          value={Math.log2(snap.iterMul || 1)}
+          format={(v) => `×${(2 ** v).toFixed(2)} · ${snap.iters}`}
+          onChange={(v) => engine.setIterMul(2 ** v)}
+        />
+      ) : (
+        <Slider
+          label="Iterations"
+          min={Math.log2(24)}
+          max={Math.log2(snap.maxIter || 400)}
+          step={0.01}
+          value={Math.log2(Math.max(24, snap.iterBias))}
+          format={(v) => String(Math.round(2 ** v))}
+          onChange={(v) => engine.setIterBias(Math.round(2 ** v))}
+        />
+      )}
       <label className="check">
         <input type="checkbox" checked={snap.autoIter} onChange={(event) => engine.setAutoIter(event.target.checked)} />
-        Auto iterations, rising with zoom
+        Auto iterations, rising with zoom (slider scales them)
       </label>
       <Slider label="Palette speed" min={-2} max={2} step={0.01} value={snap.paletteSpeed} onChange={(v) => engine.setPaletteSpeed(v)} />
       <Slider label="Color density" min={0.004} max={0.2} step={0.001} value={snap.density} onChange={(v) => engine.setDensity(v)} />

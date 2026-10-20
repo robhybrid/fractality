@@ -212,7 +212,11 @@ function blaFor(orbit, dcMax, julia) {
   return levels;
 }
 
-/** Per-frame constants for deepPixel; state.cx/cy are relative to the high-precision anchor. */
+/**
+ * Per-frame constants for deepPixel. state.cx/cy are relative to the
+ * high-precision anchor and deep.ox/oy is anchor minus reference point, so a
+ * pixel's offset from the reference is its anchor-relative position plus ox/oy.
+ */
 export function deepContext(state) {
   const deep = state.deep;
   const main = orbits.get(deep.id);
@@ -249,7 +253,11 @@ export function deepContext(state) {
   };
 }
 
-/** Same output contract as the direct escape kernel: smooth count in iter, alpha 0 inside. */
+/**
+ * Same output contract as the direct escape kernel: smooth count in iter,
+ * alpha 0 inside. Inside pixels that ran out of iterations instead of
+ * settling into a cycle get extra = 1, so the caller can raise the limit.
+ */
 export function deepPixel(buf, idx, wx, wy, k) {
   const julia = k.julia;
   let dcx = wx + k.ox;
@@ -279,6 +287,7 @@ export function deepPixel(buf, idx, wx, wy, k) {
   let zy = Z[1] + dy;
   let z2 = zx * zx + zy * zy;
   let escaped = z2 > bail;
+  let cycled = false;
   while (!escaped && n < maxIter) {
     let stepped = false;
     const j = m - 1;
@@ -346,7 +355,10 @@ export function deepPixel(buf, idx, wx, wy, k) {
       }
       rebases += 1;
       if (periodic) {
-        if (rebases > 1 && Math.abs(zx - sx) + Math.abs(zy - sy) < tol) break;
+        if (rebases > 1 && Math.abs(zx - sx) + Math.abs(zy - sy) < tol) {
+          cycled = true;
+          break;
+        }
         if (rebases === checkpoint) {
           sx = zx;
           sy = zy;
@@ -362,7 +374,7 @@ export function deepPixel(buf, idx, wx, wy, k) {
   }
   if (!escaped) {
     buf.iter[idx] = 0;
-    buf.extra[idx] = 0;
+    buf.extra[idx] = cycled ? 0 : 1;
     buf.alpha[idx] = 0;
     return;
   }

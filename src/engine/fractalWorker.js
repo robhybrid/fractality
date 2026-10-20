@@ -1,6 +1,12 @@
+import { putOrbit } from "./deep.js";
 import { createBuffer, fillRows, shadeLevels } from "./kernel.js";
 
 self.onmessage = (event) => {
+  if (event.data.orbit) {
+    const { id, Z, N } = event.data.orbit;
+    putOrbit(id, Z, N);
+    return;
+  }
   const { gen, y0, y1, state } = event.data;
   const buf = createBuffer(state.w, y1 - y0);
   buf.y0 = y0;

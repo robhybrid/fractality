@@ -1,5 +1,6 @@
 import { BUDGET } from "../budget.js";
 import { fitSize } from "./color.js";
+import { DeepReference } from "./deepRef.js";
 import { createBuffer, fillAll, fillRows, shadeLevels } from "./kernel.js";
 import { buildLut, interiorColor, paint } from "./shade.js";
 
@@ -40,6 +41,7 @@ function paramKey(s) {
     q(s.trap || 0, 3),
     s.skipInterior ? 1 : 0,
     s.frameKey || "",
+    s.deep ? "deep" : "",
     s.family === "ray" ? `${q(s.yaw, 4)}:${q(s.pitch, 4)}:${q(s.dist, 4)}:${s.steps}:${s.rayIters}` : "",
   ].join(":");
 }
@@ -281,7 +283,77 @@ export class Presenter {
       else if (ms < 24) this.motionShare = Math.min(1, this.motionShare * 1.12);
     }
     this.job = null;
+    if (job.state.deep) this.deepStats(job, ms);
     this.show(job.buf, job.view, job.ident, job.sig);
+  }
+
+  /** Adds the reference orbit to a deep state, or returns null until one is ready. */
+  deepState(input) {
+    if (!this.deepRef) {
+      this.deepRef = new DeepReference((job, msg) => {
+        for (const worker of this.workers) {
+          worker.postMessage({ orbit: { id: job.id, Z: msg.Z, N: msg.N } });
+          if (job.critId) worker.postMessage({ orbit: { id: job.critId, Z: msg.C, N: msg.CN } });
+        }
+      });
+    }
+    const desc = this.deepRef.prepare(input);
+    return desc ? { ...input, deep: { ...desc, key: input.deep.key } } : null;
+  }
+
+  /** Remembers the slowest pixel as the next reference point, and how deep escapes run. */
+  deepStats(job, ms) {
+    const { buf, state } = job;
+    const { w, h, iter, alpha } = buf;
+    let best = -1;
+    let bestD = Infinity;
+    let bestI = (h >> 1) * w + (w >> 1);
+    const counts = [];
+    let unresolved = 0;
+    for (let i = 0; i < iter.length; i += 1) {
+      if (!alpha[i] && buf.extra[i] > 0.5) unresolved += 1;
+      const v = alpha[i] ? iter[i] : state.iters + 1;
+      if (v >= best) {
+        const d = Math.abs((i % w) - w / 2) + Math.abs(Math.floor(i / w) - h / 2);
+        if (v > best || d < bestD) {
+          best = v;
+          bestD = d;
+          bestI = i;
+        }
+      }
+      if (alpha[i] && (i & 7) === 0) counts.push(iter[i]);
+    }
+    counts.sort((a, b) => a - b);
+    const nx = (((bestI % w) + 0.5) / w) * 2 - 1;
+    const ny = 1 - ((Math.floor(bestI / w) + 0.5) / h) * 2;
+    const px = nx * (w / h) * state.radius;
+    const py = ny * state.radius;
+    const c = Math.cos(state.rotation || 0);
+    const s = Math.sin(state.rotation || 0);
+    this.deepRef.setHint(state.deep.key, state.cx + px * c - py * s, state.cy + px * s + py * c, best);
+    this.deepInfo = {
+      serial: (this.deepInfo?.serial || 0) + 1,
+      iters: state.iters,
+      escHi: counts.length ? counts[Math.floor(counts.length * 0.998)] : 0,
+      unresolved: unresolved / iter.length,
+      ms: Math.round(ms),
+      w,
+      h,
+      soft: job.soft,
+      orbitN: this.deepRef.current?.N || 0,
+      orbitMs: Math.round(this.deepRef.current?.ms || 0),
+    };
+  }
+
+  shiftOrigin(dx, dy) {
+    const move = (view) => {
+      if (!view) return;
+      view.cx -= dx;
+      view.cy -= dy;
+    };
+    move(this.shown?.view);
+    move(this.job?.view);
+    this.deepRef?.shift(dx, dy);
   }
 
   show(buf, view, ident, sig) {
@@ -307,22 +379,28 @@ export class Presenter {
     this.show(job.buf, job.view, job.ident, "preview");
   }
 
-  render(state) {
-    const { cssW, cssH } = state;
+  render(input) {
+    const { cssW, cssH } = input;
     const [W, H] = this.displaySize(cssW, cssH);
     if (this.canvas.width !== W || this.canvas.height !== H) {
       this.canvas.width = W;
       this.canvas.height = H;
       this.paintKey = "";
     }
-    const ident = `${state.family}:${state.formula}`;
+    const state = input.deep ? this.deepState(input) : input;
+    const ident = `${input.family}:${input.formula}`;
     if (!this.shown || this.shown.ident !== ident) {
       if (this.job) this.job = null;
       this.gen += 1;
-      this.preview(state, W, H);
+      if (state) this.preview(state, W, H);
+      else this.shown = null;
       this.lastJobSig = "";
     }
-    if (this.job && state.soft && !this.job.soft) {
+    if (!state) {
+      this.draw(input, W, H);
+      return { pending: true, viewW: this.shown?.buf.w || 0, viewH: this.shown?.buf.h || 0, flip: false, deepInfo: this.deepInfo };
+    }
+    if (this.job && ((state.soft && !this.job.soft) || (state.deep && this.job.state.iters !== state.iters))) {
       this.job = null;
       this.gen += 1;
       this.lastJobSig = "";
@@ -338,6 +416,7 @@ export class Presenter {
       viewW: this.shown?.buf.w || 0,
       viewH: this.shown?.buf.h || 0,
       flip: false,
+      deepInfo: this.deepInfo,
     };
     if (state.capture) {
       const pixels = this.ctx.getImageData(0, 0, W, H);
@@ -473,6 +552,7 @@ export class Presenter {
   destroy() {
     this.dead = true;
     this.disableGpu();
+    this.deepRef?.destroy();
     for (const worker of this.workers) worker.terminate();
     this.workers = [];
   }

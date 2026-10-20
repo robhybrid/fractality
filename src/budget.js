@@ -12,6 +12,7 @@ export const BUDGET = {
   maxPixelsIfs: 1920 * 1200,
   displayPixels: 1920 * 1200,
   maxIter: 400,
+  maxDeepIter: 60000,
   minIter: 24,
   defaultIter: 48,
   maxSteps: 28,
