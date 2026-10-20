@@ -131,7 +131,7 @@ for (const spot of spots) {
     row.radiusAfterZoom = after.radius.toExponential(2);
     row.motionSize = `${after.w}x${after.h}`;
   }
-  if (process.env.DEBUG) console.log(await evaluate(`JSON.stringify({ hint: window.fractality.renderer.deepRef.hint, cur: { ...window.fractality.renderer.deepRef.current, x: 0, y: 0 }, pending: !!window.fractality.renderer.deepRef.pending, info: window.fractality.deepInfo, cx: window.fractality.cx, cy: window.fractality.cy, r: window.fractality.radius })`));
+  if (process.env.DEBUG) console.log(await evaluate(`JSON.stringify({ desc: window.fractality.renderer.shown && window.fractality.renderer.job, dbg: (() => { const e = window.fractality; const r = e.renderer; const cur = r.deepRef.current; return { anchorBits: e.anchor?.bits, curBits: cur?.bits, sample: Array.from(r.shown.buf.iter.slice(0, 5)), state: r.lastJobSig.slice(0, 200) }; })(), hint: window.fractality.renderer.deepRef.hint, cur: { ...window.fractality.renderer.deepRef.current, x: 0, y: 0 }, pending: !!window.fractality.renderer.deepRef.pending, info: window.fractality.deepInfo, cx: window.fractality.cx, cy: window.fractality.cy, r: window.fractality.radius })`));
   report.push(row);
   console.log(JSON.stringify(row));
 }

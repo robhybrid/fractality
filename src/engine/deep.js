@@ -129,7 +129,14 @@ export function referenceOrbit({ zx: z0x, zy: z0y, cx, cy, bits, maxIter, bail =
   return { Z: out.subarray(0, 2 * n), N: n, escaped: n <= maxIter };
 }
 
-const EPS = 2 ** -40;
+/**
+ * BLA validity is |d| < eps |Z|. Settled frames use 2^-40, which keeps all
+ * but ~0.3% of pixels within half an iteration of plain perturbation (those
+ * are chaotic pixels where any error is amplified); frames shown while
+ * moving use 2^-28, about 1.5-2x faster.
+ */
+export const EPS_STILL = 2 ** -40;
+export const EPS_MOVING = 2 ** -28;
 const STRIDE = 5;
 
 /**
@@ -137,7 +144,7 @@ const STRIDE = 5;
  * d -> A d + B dc, valid while |d| < R. R is stored divided by sqrt 2 so a
  * max-norm test on d is enough and nothing underflows at extreme depth.
  */
-export function buildBla(Z, N, dcMax, julia) {
+export function buildBla(Z, N, dcMax, julia, eps = EPS_STILL) {
   const count0 = N - 2;
   if (count0 < 1) return null;
   const levels = [];
@@ -151,7 +158,7 @@ export function buildBla(Z, N, dcMax, julia) {
     cur[e + 1] = 2 * y;
     cur[e + 2] = julia ? 0 : 1;
     cur[e + 3] = 0;
-    cur[e + 4] = EPS * Math.hypot(x, y);
+    cur[e + 4] = eps * Math.hypot(x, y);
   }
   let count = count0;
   levels.push({ data: cur, count });
@@ -201,11 +208,13 @@ export function hasOrbit(id) {
   return orbits.has(id);
 }
 
-function blaFor(orbit, dcMax, julia) {
-  const key = julia ? 0 : 2 ** Math.ceil(Math.log2(Math.max(dcMax, 1e-300)));
+function blaFor(orbit, dcMax, julia, eps) {
+  const dc = julia ? 0 : 2 ** Math.ceil(Math.log2(Math.max(dcMax, 1e-300)));
+  const key = `${eps}:${dc}`;
   let levels = orbit.bla.get(key);
   if (levels === undefined) {
-    levels = buildBla(orbit.Z, orbit.N, key, julia);
+    const built = buildBla(orbit.Z, orbit.N, dc, julia, eps);
+    levels = built && { data: built.map((level) => level.data), count: Int32Array.from(built, (level) => level.count) };
     if (orbit.bla.size > 3) orbit.bla.delete(orbit.bla.keys().next().value);
     orbit.bla.set(key, levels);
   }
@@ -236,6 +245,7 @@ export function deepContext(state) {
     dcMax = Math.max(dcMax, Math.hypot(x, y));
   }
   const useBla = deep.bla !== false;
+  const eps = deep.eps || (state.soft ? EPS_MOVING : EPS_STILL);
   const px = (2 * state.radius) / Math.max(1, state.h || 1);
   return {
     julia,
@@ -243,8 +253,8 @@ export function deepContext(state) {
     oy: deep.oy,
     main,
     crit,
-    mainBla: useBla ? blaFor(main, dcMax, julia) : null,
-    critBla: useBla ? (crit === main ? null : blaFor(crit, dcMax, julia)) : null,
+    mainBla: useBla ? blaFor(main, dcMax, julia, eps) : null,
+    critBla: useBla && crit !== main ? blaFor(crit, dcMax, julia, eps) : null,
     n: Math.max(1, state.iters | 0),
     bail: Math.max(state.bailout || 4, 4),
     periodic: !!state.skipInterior,
@@ -270,10 +280,11 @@ export function deepPixel(buf, idx, wx, wy, k) {
     dcx = 0;
     dcy = 0;
   }
-  let orbit = k.main;
-  let levels = k.mainBla;
-  let Z = orbit.Z;
-  let last = orbit.N - 1;
+  let Z = k.main.Z;
+  let last = k.main.N - 1;
+  let bla = k.mainBla;
+  let L0 = bla ? bla.data[0] : null;
+  let L0n = bla ? bla.count[0] : 0;
   const { n: maxIter, bail, periodic, tol } = k;
   let m = 0;
   let n = 0;
@@ -289,24 +300,19 @@ export function deepPixel(buf, idx, wx, wy, k) {
   let escaped = z2 > bail;
   let cycled = false;
   while (!escaped && n < maxIter) {
-    let stepped = false;
     const j = m - 1;
-    const ax = Math.abs(dx);
-    const ay = Math.abs(dy);
-    let r0 = 0;
-    if (levels && m > 0 && j < levels[0].count) r0 = levels[0].data[j * STRIDE + 4];
-    if (ax < r0 && ay < r0) {
-      let top = levels.length - 1;
-      if (j > 0) top = Math.min(top, 31 - Math.clz32(j & -j));
-      for (let lv = top; lv >= 0; lv -= 1) {
-        const level = levels[lv];
+    const r0 = j >= 0 && j < L0n ? L0[j * STRIDE + 4] : 0;
+    if (dx < r0 && -dx < r0 && dy < r0 && -dy < r0) {
+      let lv = bla.data.length - 1;
+      if (j > 0) lv = Math.min(lv, 31 - Math.clz32(j & -j));
+      for (; lv >= 0; lv -= 1) {
         const i = j >> lv;
-        if (i >= level.count) continue;
-        const D = level.data;
+        if (i >= bla.count[lv]) continue;
+        const D = bla.data[lv];
         const e = i * STRIDE;
         const r = D[e + 4];
         const len = 1 << lv;
-        if (ax < r && ay < r && n + len <= maxIter) {
+        if (dx < r && -dx < r && dy < r && -dy < r && n + len <= maxIter) {
           const Ar = D[e];
           const Ai = D[e + 1];
           const Br = D[e + 2];
@@ -317,12 +323,10 @@ export function deepPixel(buf, idx, wx, wy, k) {
           m += len;
           n += len;
           blaSteps += 1;
-          stepped = true;
           break;
         }
       }
-    }
-    if (!stepped) {
+    } else {
       const tx = 2 * Z[2 * m] + dx;
       const ty = 2 * Z[2 * m + 1] + dy;
       const nx = tx * dx - ty * dy + dcx;
@@ -345,13 +349,11 @@ export function deepPixel(buf, idx, wx, wy, k) {
       dy = zy;
       m = 0;
       if (julia) {
-        orbit = k.crit;
-        levels = k.critBla || k.mainBla;
-        if (orbit === k.main) levels = k.mainBla;
-        Z = orbit.Z;
-        last = orbit.N - 1;
-        dx = zx - Z[0];
-        dy = zy - Z[1];
+        Z = k.crit.Z;
+        last = k.crit.N - 1;
+        bla = k.critBla;
+        L0 = bla ? bla.data[0] : null;
+        L0n = bla ? bla.count[0] : 0;
       }
       rebases += 1;
       if (periodic) {

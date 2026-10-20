@@ -29,7 +29,9 @@ export class DeepReference {
     const cur = this.current;
     let desc = null;
     let refresh = true;
-    if (cur && this.matches(cur, s) && cur.bits >= depth + 40) {
+    // An orbit cut off before the iteration limit cannot be used: pixels
+    // reaching its end would rebase with |Z| >> |d| and lose their offsets.
+    if (cur && this.matches(cur, s) && cur.bits >= depth + 40 && (cur.escaped || cur.N > s.iters)) {
       const ox = bigDiff(s.deep.ax, s.deep.bits, cur.x, cur.bits);
       const oy = bigDiff(s.deep.ay, s.deep.bits, cur.y, cur.bits);
       const dist = Math.hypot(ox + s.cx, oy + s.cy);
