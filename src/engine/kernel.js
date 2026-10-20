@@ -107,107 +107,189 @@ function paintEscape(buf, idx, escaped, smooth, stripe) {
   buf.alpha[idx] = 1;
 }
 
-function fillEscape(buf, state, y0, y1) {
-  const p = planeOf(state);
-  const n = clampIter(state.iters, 1200);
-  const bail = Math.max(state.bailout || 4, 4);
+function escapeContext(state) {
   const power = Math.max(state.power || 2, 0.35);
   const formula = state.formula | 0;
-  const skip = !!(state.skipInterior && formula === 0 && Math.abs(power - 2) < 0.02);
-  const fast = formula === 0 && Math.abs(power - 2) < 0.0008;
-  const julia = formula === 1 || formula === 7;
-  const jx = state.juliaRe || 0;
-  const jy = state.juliaIm || 0;
-  const extraK = state.extra || 0;
+  const square = Math.abs(power - 2) < 0.0008;
+  const px = (2 * state.radius) / Math.max(1, state.h || 1);
+  return {
+    n: clampIter(state.iters, 1200),
+    bail: Math.max(state.bailout || 4, 4),
+    power,
+    formula,
+    square,
+    skip: !!(state.skipInterior && formula === 0 && Math.abs(power - 2) < 0.02),
+    periodic: !!state.skipInterior && formula !== 7,
+    tol2: (px * 0.05) ** 2,
+    julia: formula === 1 || formula === 7,
+    jx: state.juliaRe || 0,
+    jy: state.juliaIm || 0,
+    extraK: state.extra || 0,
+  };
+}
+
+/**
+ * One escape-time pixel. Points inside the main cardioid or period-2 bulb are
+ * skipped outright; other interior points stop as soon as the orbit repeats
+ * (Brent's cycle check: compare against a point saved at powers of two).
+ */
+function escapePixel(buf, idx, wx, wy, c) {
+  let cx;
+  let cy;
+  let zx;
+  let zy;
+  if (c.julia) {
+    cx = c.jx;
+    cy = c.jy;
+    zx = wx;
+    zy = wy;
+  } else {
+    cx = wx;
+    cy = wy;
+    zx = 0;
+    zy = 0;
+  }
+  if (c.skip && insideSet(cx, cy)) {
+    paintEscape(buf, idx, false, 0, 0);
+    return;
+  }
+  const { n, bail, formula, square, periodic, tol2, extraK } = c;
+  let prevX = 0;
+  let prevY = 0;
+  let saveX = zx;
+  let saveY = zy;
+  let checkpoint = 16;
+  for (let i = 0; i < n; i += 1) {
+    if (formula === 0 && square) {
+      const xx = zx * zx - zy * zy + cx;
+      zy = 2 * zx * zy + cy;
+      zx = xx;
+    } else {
+      let bx = zx;
+      let by = zy;
+      if (formula === 2) {
+        bx = Math.abs(zx);
+        by = Math.abs(zy);
+      } else if (formula === 3) by = -zy;
+      else if (formula === 6) by = Math.abs(zy);
+      let nx;
+      let ny;
+      if (square) {
+        nx = bx * bx - by * by;
+        ny = 2 * bx * by;
+      } else {
+        const r = cpow(bx, by, c.power);
+        nx = r[0];
+        ny = r[1];
+      }
+      if (formula === 4) nx = Math.abs(nx);
+      else if (formula === 5) {
+        nx = Math.abs(nx);
+        ny = Math.abs(ny);
+      } else if (formula === 7) {
+        nx += extraK * prevX;
+        ny += extraK * prevY;
+      }
+      prevX = zx;
+      prevY = zy;
+      zx = nx + cx;
+      zy = ny + cy;
+    }
+    const z2 = zx * zx + zy * zy;
+    if (z2 > bail) {
+      paintEscape(buf, idx, true, smoothIter(i, zx, zy, bail, c.power), 0.5 + 0.5 * Math.sin(Math.atan2(zy, zx) * 2));
+      return;
+    }
+    if (periodic && (i & 3) === 0) {
+      const dx = zx - saveX;
+      const dy = zy - saveY;
+      if (dx * dx + dy * dy < tol2) break;
+      if (i === checkpoint) {
+        saveX = zx;
+        saveY = zy;
+        checkpoint *= 2;
+      }
+    }
+  }
+  paintEscape(buf, idx, false, 0, 0);
+}
+
+/**
+ * Solid guessing: compute every other pixel on every other row, then fill a
+ * gap pixel from its computed neighbors when they agree. "interior" only
+ * fills when all neighbors are inside the set (always safe in practice);
+ * "full" also fills matching escape bands, used while the view is moving.
+ */
+function fillEscape(buf, state, y0, y1) {
+  const p = planeOf(state);
+  const c = escapeContext(state);
   const w = buf.w;
   buf.source = 0;
-  for (let y = y0; y < y1; y += 1) {
-    const row = rowStart(p, y);
-    let wx = row.wx;
-    let wy = row.wy;
-    const o = (y - buf.y0) * w;
+  const guess = state.guess || (state.soft ? "full" : "off");
+  const rows = y1 - y0;
+  if (guess === "off" || rows < 3 || w < 3) {
+    for (let y = y0; y < y1; y += 1) {
+      const row = rowStart(p, y);
+      const o = (y - buf.y0) * w;
+      for (let x = 0; x < w; x += 1) escapePixel(buf, o + x, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
+    }
+    return;
+  }
+  const full = guess === "full";
+  const { iter, extra, alpha } = buf;
+  const coarseRow = (ly) => (ly & 1) === 0 || ly === rows - 1;
+  const coarseCol = (x) => (x & 1) === 0 || x === w - 1;
+  const starts = new Array(rows);
+  for (let ly = 0; ly < rows; ly += 1) starts[ly] = rowStart(p, y0 + ly);
+  for (let ly = 0; ly < rows; ly += 1) {
+    if (!coarseRow(ly)) continue;
+    const row = starts[ly];
+    const o = (y0 + ly - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
-      let cx;
-      let cy;
-      let zx;
-      let zy;
-      if (julia) {
-        cx = jx;
-        cy = jy;
-        zx = wx;
-        zy = wy;
-      } else {
-        cx = wx;
-        cy = wy;
-        zx = 0;
-        zy = 0;
-      }
-      let prevX = 0;
-      let prevY = 0;
-      let escaped = false;
-      let smooth = 0;
-      let stripe = 0.35;
+      if (coarseCol(x)) escapePixel(buf, o + x, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
+    }
+  }
+  for (let ly = 0; ly < rows; ly += 1) {
+    const rowCoarse = coarseRow(ly);
+    const row = starts[ly];
+    const o = (y0 + ly - buf.y0) * w;
+    for (let x = 0; x < w; x += 1) {
+      const colCoarse = coarseCol(x);
+      if (rowCoarse && colCoarse) continue;
       const idx = o + x;
-      if (skip && insideSet(cx, cy)) {
-        paintEscape(buf, idx, false, 0, 0);
-      } else if (fast) {
-        let checkX = zx;
-        let checkY = zy;
-        for (let i = 0; i < n; i += 1) {
-          const xx = zx * zx - zy * zy + cx;
-          const yy = 2 * zx * zy + cy;
-          zx = xx;
-          zy = yy;
-          const z2 = zx * zx + zy * zy;
-          if (z2 > bail) {
-            smooth = smoothIter(i, zx, zy, bail, 2);
-            stripe = 0.5 + 0.5 * Math.sin(Math.atan2(zy, zx) * 2);
-            escaped = true;
-            break;
-          }
-          if (skip && i > 24 && (i & 15) === 0) {
-            const dx = zx - checkX;
-            const dy = zy - checkY;
-            if (dx * dx + dy * dy < 1e-5) break;
-            checkX = zx;
-            checkY = zy;
-          }
-        }
-        paintEscape(buf, idx, escaped, smooth, stripe);
+      let a;
+      let b;
+      let cc = -1;
+      let d = -1;
+      if (rowCoarse) {
+        a = idx - 1;
+        b = idx + 1;
+      } else if (colCoarse) {
+        a = idx - w;
+        b = idx + w;
       } else {
-        for (let i = 0; i < n; i += 1) {
-          let bx = zx;
-          let by = zy;
-          if (formula === 2) {
-            bx = Math.abs(zx);
-            by = Math.abs(zy);
-          } else if (formula === 3) by = -zy;
-          else if (formula === 6) by = Math.abs(zy);
-          let [nx, ny] = cpow(bx, by, power);
-          if (formula === 4) nx = Math.abs(nx);
-          else if (formula === 5) {
-            nx = Math.abs(nx);
-            ny = Math.abs(ny);
-          } else if (formula === 7) {
-            nx += extraK * prevX;
-            ny += extraK * prevY;
-          }
-          prevX = zx;
-          prevY = zy;
-          zx = nx + cx;
-          zy = ny + cy;
-          const z2 = zx * zx + zy * zy;
-          if (z2 > bail) {
-            smooth = smoothIter(i, zx, zy, bail, power);
-            stripe = 0.5 + 0.5 * Math.sin(Math.atan2(zy, zx) * 2);
-            escaped = true;
-            break;
-          }
-        }
-        paintEscape(buf, idx, escaped, smooth, stripe);
+        a = idx - w - 1;
+        b = idx - w + 1;
+        cc = idx + w - 1;
+        d = idx + w + 1;
       }
-      wx += row.dwx;
-      wy += row.dwy;
+      const four = cc >= 0;
+      const sumA = alpha[a] + alpha[b] + (four ? alpha[cc] + alpha[d] : 0);
+      if (sumA === 0) {
+        paintEscape(buf, idx, false, 0, 0);
+        continue;
+      }
+      if (full && sumA === (four ? 4 : 2)) {
+        const fa = Math.floor(iter[a]);
+        if (Math.floor(iter[b]) === fa && (!four || (Math.floor(iter[cc]) === fa && Math.floor(iter[d]) === fa))) {
+          const k = four ? 0.25 : 0.5;
+          iter[idx] = (iter[a] + iter[b] + (four ? iter[cc] + iter[d] : 0)) * k;
+          extra[idx] = (extra[a] + extra[b] + (four ? extra[cc] + extra[d] : 0)) * k;
+          alpha[idx] = 1;
+          continue;
+        }
+      }
+      escapePixel(buf, idx, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
     }
   }
 }
