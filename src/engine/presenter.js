@@ -4,26 +4,6 @@ import { fitSize } from "./color.js";
 import { createBuffer, fillAll, fillRows, shadeLevels } from "./kernel.js";
 import { buildLut, interiorColor, paint } from "./shade.js";
 
-export function orbitCamera(yaw, pitch, dist) {
-  const cp = Math.cos(pitch);
-  const sp = Math.sin(pitch);
-  const cy = Math.cos(yaw);
-  const sy = Math.sin(yaw);
-  const eye = [dist * cp * sy, dist * sp, dist * cp * cy];
-  const len = Math.hypot(eye[0], eye[1], eye[2]) || 1;
-  const forward = [-eye[0] / len, -eye[1] / len, -eye[2] / len];
-  let right = [-forward[2], 0, forward[0]];
-  const rl = Math.hypot(right[0], right[1], right[2]);
-  if (rl < 1e-5) right = [1, 0, 0];
-  else right = right.map((v) => v / rl);
-  const up = [
-    right[1] * forward[2] - right[2] * forward[1],
-    right[2] * forward[0] - right[0] * forward[2],
-    right[0] * forward[1] - right[1] * forward[0],
-  ];
-  return { eye, forward, right, up };
-}
-
 function q(n, places) {
   return Math.round(n * 10 ** places);
 }
@@ -41,7 +21,7 @@ function paramKey(s) {
     q(s.trap || 0, 3),
     s.skipInterior ? 1 : 0,
     s.frameKey || "",
-    s.family === "ray" ? `${q(s.yaw, 4)}:${q(s.pitch, 4)}:${q(s.dist, 4)}:${s.steps}:${s.rayIters}` : "",
+    s.family === "ray" ? `${s.camKey}:${s.steps}:${s.rayIters}` : "",
   ].join(":");
 }
 

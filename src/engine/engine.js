@@ -2,8 +2,9 @@ import { BUDGET } from "../budget.js";
 import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, cloneStops } from "../data.js";
 import { BeatListener } from "./audio.js";
 import { clamp, cssGradient, fitSize, randomPalette, rasterize, shiftHue, smoothDamp } from "./color.js";
-import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, pickChild } from "./frames.js";
-import { Presenter, orbitCamera } from "./presenter.js";
+import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, renormStep } from "./frames.js";
+import { angles, baseGap, basis, clampPitch, lookCamera, march, probe, orbitEye, pivotDistance, pixelRay, rayDetail, wrapAngle } from "./flight.js";
+import { Presenter } from "./presenter.js";
 
 const HOTKEY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9 };
 
@@ -147,11 +148,9 @@ class Engine {
     if (fractal.family === "ray") {
       this.yaw = home.yaw;
       this.pitch = home.pitch;
-      this.dist = home.dist;
-      this.yawT = home.yaw;
-      this.pitchT = home.pitch;
-      this.distT = home.dist;
-      this.vYaw = this.vPitch = this.vDist = 0;
+      this.eye = orbitEye(home.yaw, home.pitch, home.dist);
+      this.gapIters = null;
+      this.syncFlight();
       this.cx = 0;
       this.cy = 0;
       this.radius = 1;
@@ -196,9 +195,7 @@ class Engine {
       cy: this.cy,
       logR: this.logR,
       rotation: this.rotation,
-      yaw: this.yaw,
-      pitch: this.pitch,
-      dist: this.dist,
+      ...(f.family === "ray" ? { yaw: this.yawT, pitch: this.pitchT, eye: this.eyeT.slice(), gapIters: this.gapIters } : {}),
       power: this.powerT,
       bail: this.bailT,
       juliaRe: this.juliaReT,
@@ -216,18 +213,17 @@ class Engine {
     this.logR = mem.logR;
     this.radius = Math.exp(mem.logR);
     this.rotation = mem.rotation;
-    this.yaw = mem.yaw ?? 0.5;
-    this.pitch = mem.pitch ?? 0.3;
-    this.dist = mem.dist ?? 2.5;
+    const home = this.fractal.home;
+    this.yaw = mem.yaw ?? home.yaw ?? 0.5;
+    this.pitch = mem.pitch ?? home.pitch ?? 0.3;
+    this.eye = mem.eye?.slice() ?? (this.fractal.family === "ray" ? orbitEye(this.yaw, this.pitch, home.dist) : null);
+    this.gapIters = mem.gapIters ?? null;
+    if (this.eye) this.syncFlight();
     this.tcx = this.cx;
     this.tcy = this.cy;
     this.tLogR = this.logR;
     this.tRot = this.rotation;
-    this.yawT = this.yaw;
-    this.pitchT = this.pitch;
-    this.distT = this.dist;
     this.vCx = this.vCy = this.vLogR = this.vRot = 0;
-    this.vYaw = this.vPitch = this.vDist = 0;
     this.power = mem.power;
     this.powerT = mem.power;
     this.bailout = mem.bail;
@@ -298,16 +294,7 @@ class Engine {
 
   zoomAt(x, y, factor) {
     if (this.fractal.family === "ray") {
-      const { w, h } = this.screenSize();
-      const nx = (x / w) * 2 - 1;
-      const ny = ((y / h) * 2 - 1);
-      this.yaw += nx * (1 - factor) * 0.35;
-      this.pitch = clamp(this.pitch + ny * (1 - factor) * 0.22, -1.15, 1.15);
-      this.dist = clamp(this.dist * factor, BUDGET.minDist, BUDGET.maxDist);
-      this.yawT = this.yaw;
-      this.pitchT = this.pitch;
-      this.distT = this.dist;
-      this.vYaw = this.vPitch = this.vDist = 0;
+      this.flyAt(x, y, factor);
       return;
     }
     const world = this.screenToWorld(x, y);
@@ -316,7 +303,7 @@ class Engine {
     this.logR = Math.log(clamp(this.radius * factor, this.minRadius(), BUDGET.maxRadius));
     this.radius = Math.exp(this.logR);
     if (this.fractal.frame && factor < 1) {
-      const anchor = anchorPoint(this.fractal.frame, this.cx, this.cy);
+      const anchor = anchorPoint(this.frameData, this.cx, this.cy);
       if (anchor) {
         const pull = Math.min(1, (1 - factor) * 2.5);
         this.cx += (anchor[0] - this.cx) * pull;
@@ -342,9 +329,106 @@ class Engine {
     this.syncTargets();
   }
 
+  syncFlight() {
+    this.eyeT = this.eye.slice();
+    this.yawT = this.yaw;
+    this.pitchT = this.pitch;
+    this.vEye = [0, 0, 0];
+    this.vYaw = this.vPitch = 0;
+  }
+
+  flightGap(eye = this.eye) {
+    const f = this.fractal;
+    const key = `${f.id}:${Math.round(this.power * 1000)}`;
+    if (this.homeKey !== key) {
+      this.homeKey = key;
+      this.homeGap = baseGap(orbitEye(f.home.yaw, f.home.pitch, f.home.dist), f.formula, this.power);
+    }
+    const found = probe(eye, f.formula, this.power, this.homeGap, this.gapIters);
+    if (eye === this.eye) this.gapIters = found.iters;
+    return found.gap;
+  }
+
+  /** Continuous zoom: fly along the ray under the cursor and steer the view toward it. */
+  flyAt(x, y, factor) {
+    const { w, h } = this.screenSize();
+    const cam = lookCamera(this.eye, this.yaw, this.pitch);
+    const gap = this.gap ?? this.flightGap();
+    if (factor < 1) {
+      const k = 1 - factor;
+      let lock = this.flyLock;
+      let toward = lock?.point ? lock.point.map((v, i) => v - this.eye[i]) : null;
+      const reach = toward ? Math.hypot(...toward) : 0;
+      if (!lock || lock.iters !== this.gapIters || Math.hypot(x - lock.x, y - lock.y) > 2 || (toward && reach < gap * 1.5)) {
+        const ray = pixelRay(cam, (x / w) * 2 - 1, 1 - (y / h) * 2, w / h);
+        const f = this.fractal;
+        const t = march(this.eye, ray, f.formula, this.power, this.gapIters);
+        lock = this.flyLock = { x, y, ray, iters: this.gapIters, point: t > 0 ? this.eye.map((v, i) => v + ray[i] * t) : null };
+        toward = lock.point ? ray : null;
+      }
+      // Aiming at a surface point: fly to it and turn it toward the center. Aiming at empty space: drift along the ray.
+      const dir = toward ? toward.map((v) => v / (Math.hypot(...toward) || 1)) : pixelRay(cam, (x / w) * 2 - 1, 1 - (y / h) * 2, w / h);
+      // The marched ray is clear up to the locked point, so the approach can follow the distance left along it.
+      const left = toward ? Math.hypot(...toward) : 0;
+      if (gap > BUDGET.minGap) {
+        const move = Math.min(gap * 4, Math.max(gap * 0.8, left * 0.7)) * k;
+        this.eye = clampEye(this.eye.map((v, i) => v + dir[i] * move));
+      }
+      if (toward) {
+        const aim = angles(dir);
+        this.yaw += wrapAngle(aim.yaw - this.yaw) * k * 0.3;
+        this.pitch = clampPitch(this.pitch + (aim.pitch - this.pitch) * k * 0.3);
+      }
+    } else {
+      const move = Math.max(gap, this.homeGap * 0.02) * (factor - 1) * 0.8;
+      this.eye = clampEye(this.eye.map((v, i) => v - cam.forward[i] * move));
+    }
+    this.gap = this.flightGap();
+    this.syncFlight();
+  }
+
+  /** Eased move along the view direction by a fraction of the gap (negative backs away). */
+  flyBy(fraction, x = null, y = null, turn = 0) {
+    const gap = this.flightGap(this.eyeT);
+    const cam = lookCamera(this.eyeT, this.yawT, this.pitchT);
+    let dir = cam.forward;
+    if (x !== null) {
+      const { w, h } = this.screenSize();
+      dir = pixelRay(cam, (x / w) * 2 - 1, 1 - (y / h) * 2, w / h);
+      const aim = angles(dir);
+      this.yawT += wrapAngle(aim.yaw - this.yawT) * turn;
+      this.pitchT = clampPitch(this.pitchT + (aim.pitch - this.pitchT) * turn);
+    }
+    const move = fraction > 0 ? (gap > BUDGET.minGap ? gap * Math.min(fraction, 0.85) : 0) : Math.max(gap, this.homeGap * 0.02) * fraction;
+    this.eyeT = clampEye(this.eyeT.map((v, i) => v + dir[i] * move));
+  }
+
+  orbitPivot(eye, yaw, pitch) {
+    const f = this.fractal;
+    const gap = this.flightGap(eye);
+    const r = pivotDistance(eye, yaw, pitch, f.formula, this.power, gap, this.gapIters);
+    const { forward } = basis(yaw, pitch);
+    return { r, point: eye.map((v, i) => v + forward[i] * r) };
+  }
+
+  /** Eased orbit around the point under the screen center. */
+  orbitBy(dYaw, dPitch) {
+    const pivot = this.orbitPivot(this.eyeT, this.yawT, this.pitchT);
+    this.yawT += dYaw;
+    this.pitchT = clampPitch(this.pitchT + dPitch);
+    const { forward } = basis(this.yawT, this.pitchT);
+    this.eyeT = clampEye(pivot.point.map((v, i) => v - forward[i] * pivot.r));
+  }
+
+  camKey() {
+    const q = Math.max(this.gap || 0, BUDGET.minGap) * 2e-4;
+    return `${this.eye.map((v) => Math.round(v / q)).join(",")}:${Math.round(this.yaw * 1e5)}:${Math.round(this.pitch * 1e5)}`;
+  }
+
   nudgeZoom(event, factor) {
     if (this.fractal.family === "ray") {
-      this.distT = clamp(this.dist * factor, BUDGET.minDist, BUDGET.maxDist);
+      this.flyBy(1 - factor, event?.offsetX ?? this.mx, event?.offsetY ?? this.my, 0.3);
+      this.ease = 0.7;
       return;
     }
     const world = this.screenToWorld(event?.offsetX ?? this.mx, event?.offsetY ?? this.my);
@@ -395,6 +479,7 @@ class Engine {
     }
     const holding = this.buttons.size > 0;
     this.zoomRate += (this.zoomTarget - this.zoomRate) * (1 - Math.exp(-8 * dt));
+    if (this.fractal.family === "ray") this.gap = this.flightGap();
     let geometry = false;
     if (Math.abs(this.zoomRate) > 0.01) {
       this.zoomAt(this.mx, this.my, Math.exp(-this.zoomRate * dt));
@@ -440,8 +525,8 @@ class Engine {
     const map = (x, y) => [(x - ox) * S, (y - oy) * S];
     [this.cx, this.cy] = map(this.cx, this.cy);
     [this.tcx, this.tcy] = map(this.tcx, this.tcy);
-    this.radius *= S;
     this.logR += Math.log(S);
+    this.radius = Math.exp(this.logR);
     this.tLogR += Math.log(S);
     this.vCx *= S;
     this.vCy *= S;
@@ -451,20 +536,15 @@ class Engine {
   renormalize() {
     const kind = this.fractal.frame;
     if (!kind) return;
-    const spec = frameSpec(kind);
+    const { w, h } = this.screenSize();
+    const corner = Math.hypot(1, w / h);
     let changed = false;
-    for (let guard = 0; guard < 8; guard += 1) {
-      if (this.radius < spec.down) {
-        const child = pickChild(kind, this.cx, this.cy);
-        if (!child) break;
-        this.frameDigits.push(child.digit);
-        this.reframe(spec.scale, child.ox, child.oy);
-        changed = true;
-      } else if (this.radius > spec.up && this.frameDigits.length) {
-        const [ox, oy] = childOffset(kind, this.frameDigits.pop());
-        this.reframe(1 / spec.scale, -ox * spec.scale, -oy * spec.scale);
-        changed = true;
-      } else break;
+    for (let guard = 0; guard < 2048; guard += 1) {
+      const step = renormStep(kind, this.frameDigits, this.cx, this.cy, this.radius * corner);
+      if (!step) break;
+      this.frameDigits = step.digits;
+      this.reframe(step.S, step.ox, step.oy);
+      changed = true;
     }
     if (changed) this.refreshFrame();
   }
@@ -488,7 +568,11 @@ class Engine {
   }
 
   moving() {
-    return Math.abs(this.vCx) + Math.abs(this.vCy) + Math.abs(this.vLogR) + Math.abs(this.vRot) + Math.abs(this.vYaw || 0) + Math.abs(this.vPitch || 0) + Math.abs(this.vDist || 0) > 0.0004;
+    let flight = 0;
+    if (this.fractal.family === "ray" && this.vEye) {
+      flight = Math.abs(this.vYaw) + Math.abs(this.vPitch) + (Math.hypot(...this.vEye) / Math.max(this.gap || 0, BUDGET.minGap)) * 0.02;
+    }
+    return Math.abs(this.vCx) + Math.abs(this.vCy) + Math.abs(this.vLogR) + Math.abs(this.vRot) + flight > 0.0004;
   }
 
   easeView(dt) {
@@ -500,9 +584,15 @@ class Engine {
       return [next, v];
     };
     if (this.fractal.family === "ray") {
-      [this.yaw, this.vYaw] = step(this.yaw, this.yawT, this.vYaw || 0);
-      [this.pitch, this.vPitch] = step(this.pitch, this.pitchT, this.vPitch || 0);
-      [this.dist, this.vDist] = step(this.dist, this.distT, this.vDist || 0);
+      [this.yaw, this.vYaw] = step(this.yaw, this.yawT, this.vYaw);
+      [this.pitch, this.vPitch] = step(this.pitch, this.pitchT, this.vPitch);
+      const tiny = Math.max(this.gap || 0, BUDGET.minGap) * 1e-5;
+      for (let i = 0; i < 3; i += 1) {
+        const [next, v] = smoothDamp(this.eye[i], this.eyeT[i], this.vEye[i], smooth, dt);
+        if (Math.abs(next - this.eye[i]) > tiny) changed = true;
+        this.eye[i] = next;
+        this.vEye[i] = v;
+      }
     } else {
       [this.cx, this.vCx] = step(this.cx, this.tcx, this.vCx);
       [this.cy, this.vCy] = step(this.cy, this.tcy, this.vCy);
@@ -552,7 +642,7 @@ class Engine {
       this.beatPulse = 1;
     }
     if (this.beatMode >= 2 && !this.paused) {
-      if (this.fractal.family === "ray") this.distT = clamp(this.dist * 0.94, BUDGET.minDist, BUDGET.maxDist);
+      if (this.fractal.family === "ray") this.flyBy(0.1);
       else this.tLogR = Math.log(clamp(this.radius * 0.94, this.minRadius(), BUDGET.maxRadius));
       this.ease = 0.22;
     }
@@ -565,12 +655,8 @@ class Engine {
     const [texW, texH] = fitSize(w, h, cap);
     const viewCap = soft ? texW * texH * BUDGET.interactArea : texW * texH;
     const [viewW, viewH] = soft ? fitSize(texW, texH, viewCap) : [texW, texH];
-    const iters = this.effectiveIters();
-    let rayIters = BUDGET.bulbIter;
-    if (this.fractal.id === "box") rayIters = BUDGET.boxIter;
-    if (this.fractal.id === "menger") rayIters = BUDGET.mengerIter;
-    if (this.fractal.id === "tetra") rayIters = BUDGET.tetraIter;
-    rayIters = Math.max(3, Math.round(rayIters * this.iterScale));
+    const ray = family === "ray" ? rayDetail(this.fractal.formula, this.gap ?? this.flightGap(), this.homeGap, this.iterScale * (soft ? 0.7 : 1), this.gapIters) : null;
+    const iters = ray ? ray.steps : this.effectiveIters();
     const upscale = Math.max(w / viewW, h / viewH);
     const blur = soft ? 1.15 : upscale > 1.08 ? 0.45 : 0;
     let pixels = null;
@@ -595,17 +681,15 @@ class Engine {
         juliaRe: this.juliaRe,
         juliaIm: this.juliaIm,
         extra: this.extra,
-        iters: family === "ray" ? this.effectiveIters() : iters,
-        steps: family === "ray" ? iters : BUDGET.defaultSteps,
-        rayIters,
+        iters,
+        steps: ray ? ray.steps : BUDGET.defaultSteps,
+        rayIters: ray ? ray.iters : 0,
         trap: this.trap,
         skipInterior: this.skipInterior,
         ifsPoints: Math.round(BUDGET.maxIfsPoints * this.detail * this.pixelScale),
         ifsIters: 18,
-        camera: orbitCamera(this.yaw || 0.5, this.pitch || 0.3, this.dist || 2.6),
-        yaw: this.yaw || 0,
-        pitch: this.pitch || 0,
-        dist: this.dist || 0,
+        camera: ray ? lookCamera(this.eye, this.yaw, this.pitch) : null,
+        camKey: ray ? this.camKey() : "",
         frame: this.frameData,
         frameKey: this.frameSig,
         phase: this.phase,
@@ -729,7 +813,8 @@ class Engine {
       zoomLog10: this.zoomLog10(),
       yaw: this.yaw || 0,
       pitch: this.pitch || 0,
-      dist: this.dist || 0,
+      dist: this.eye ? Math.hypot(...this.eye) : 0,
+      gap: f.family === "ray" ? this.gap || 0 : 0,
       fractals: FRACTALS.map((item, index) => ({ index, name: item.name, hotkey: item.hotkey || "" })),
       palettes: PALETTES.map((item, index) => ({ index, name: item.name })),
       modes: MODES,
@@ -836,8 +921,7 @@ class Engine {
   nudgePan(sx, sy) {
     eventSafe();
     if (this.fractal.family === "ray") {
-      this.yawT += sx * 0.08;
-      this.pitchT = clamp(this.pitchT + sy * 0.06, -1.15, 1.15);
+      this.orbitBy(sx * 0.08, sy * 0.06);
       this.ease = 0.45;
       return;
     }
@@ -850,13 +934,13 @@ class Engine {
   }
 
   bumpZoom(factor) {
-    if (this.fractal.family === "ray") this.distT = clamp(this.dist * factor, BUDGET.minDist, BUDGET.maxDist);
+    if (this.fractal.family === "ray") this.flyBy((1 - factor) * 1.4);
     else this.tLogR = Math.log(clamp(Math.exp(this.tLogR) * factor, this.minRadius(), BUDGET.maxRadius));
     this.ease = 0.55;
   }
 
   bumpRot(delta) {
-    if (this.fractal.family === "ray") this.yawT += delta;
+    if (this.fractal.family === "ray") this.orbitBy(delta, 0);
     else this.tRot += delta;
     this.ease = 0.45;
   }
@@ -980,9 +1064,9 @@ class Engine {
     const home = this.fractal.home;
     this.ease = 0.85;
     if (this.fractal.family === "ray") {
-      this.yawT = home.yaw;
+      this.yawT = this.yaw + wrapAngle(home.yaw - this.yaw);
       this.pitchT = home.pitch;
-      this.distT = home.dist;
+      this.eyeT = orbitEye(this.yawT, home.pitch, home.dist);
     } else {
       this.tcx = home.x;
       this.tcy = home.y;
@@ -1078,12 +1162,16 @@ class Engine {
 
   onPointerDown(event) {
     this.canvas.focus();
+    this.flyLock = null;
     this.buttons.add(event.button);
     this.mx = event.offsetX;
     this.my = event.offsetY;
     this.alt = event.altKey;
     if (event.button === 2 || event.altKey) this.zoomTarget = -1.15;
-    else if (event.button === 1 || event.shiftKey) this.drag = "pan";
+    else if (event.button === 1 || event.shiftKey) {
+      this.drag = "pan";
+      if (this.fractal.family === "ray") this.pivot = this.orbitPivot(this.eye, this.yaw, this.pitch);
+    }
     else if (this.mode === "zoom") this.zoomTarget = 1.2;
     else if (this.mode === "zoomout") this.zoomTarget = -1.15;
     else {
@@ -1116,10 +1204,12 @@ class Engine {
     if (!this.drag) return;
     if (this.drag === "pan") {
       if (this.fractal.family === "ray") {
+        const pivot = this.pivot || (this.pivot = this.orbitPivot(this.eye, this.yaw, this.pitch));
         this.yaw += dx * 0.005;
-        this.pitch = clamp(this.pitch - dy * 0.004, -1.15, 1.15);
-        this.yawT = this.yaw;
-        this.pitchT = this.pitch;
+        this.pitch = clampPitch(this.pitch - dy * 0.004);
+        const { forward } = basis(this.yaw, this.pitch);
+        this.eye = pivot.point.map((v, i) => v - forward[i] * pivot.r);
+        this.syncFlight();
         this.dirty = true;
       } else this.panBy(dx, dy);
     } else if (this.drag === "power") this.setPower(this.powerT + dx * 0.012);
@@ -1144,6 +1234,7 @@ class Engine {
     if (!this.buttons.size) {
       this.zoomTarget = 0;
       this.drag = null;
+      this.pivot = null;
       this.alt = false;
       return;
     }
@@ -1175,6 +1266,12 @@ class Engine {
     }
     this.publish(true);
   }
+}
+
+function clampEye(eye) {
+  const r = Math.hypot(eye[0], eye[1], eye[2]);
+  if (r <= BUDGET.maxDist) return eye;
+  return eye.map((v) => (v * BUDGET.maxDist) / r);
 }
 
 function eventSafe() {
