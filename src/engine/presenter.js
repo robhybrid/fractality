@@ -189,7 +189,7 @@ export class Presenter {
     this.job = job;
     this.lastJobSig = job.sig;
     const { w, h } = job.buf;
-    if (this.gpuEligible(job.state, h)) {
+    if (!job.still && this.gpuEligible(job.state, h)) {
       try {
         const t0 = performance.now();
         this.gpu.fill(job.buf, job.state);
@@ -240,7 +240,13 @@ export class Presenter {
 
   /** Final pass once a frame has settled at full size: extra samples on band edges. */
   startAntialias() {
-    const { buf, view, ident, sig, state } = this.shown;
+    const job = this.antialiasJob(this.shown);
+    this.job = job;
+    this.aaSig = job.sig;
+    while (this.idle.length && job.next < job.chunks.length) this.dispatch(this.idle.pop(), job);
+  }
+
+  antialiasJob({ buf, view, ident, sig, state }) {
     const { w, h } = buf;
     const out = createBuffer(w, h);
     out.iter.set(buf.iter);
@@ -268,9 +274,7 @@ export class Presenter {
     const rows = Math.max(4, Math.ceil(h / (this.workers.length * 8)));
     for (let y = 0; y < h; y += rows) job.chunks.push([y, Math.min(h, y + rows)]);
     job.remaining = job.chunks.length;
-    this.job = job;
-    this.aaSig = sig;
-    while (this.idle.length && job.next < job.chunks.length) this.dispatch(this.idle.pop(), job);
+    return job;
   }
 
   onChunk(worker, msg) {
@@ -318,6 +322,13 @@ export class Presenter {
       const { cover } = job.buf;
       for (let i = 0; i < cover.length; i += 1) if (cover[i] > 0 && cover[i] < 255) partial.push(i);
       job.buf.partial = Int32Array.from(partial);
+    }
+    if (job.still) {
+      this.job = null;
+      job.resolve(job.buf);
+      return;
+    }
+    if (job.aa) {
       this.aaMs = ms;
     } else if (job.soft) {
       if (ms > 48) this.motionShare = Math.max(0.05, this.motionShare * 0.8);
@@ -402,7 +413,7 @@ export class Presenter {
     return result;
   }
 
-  colorize(state) {
+  lutFor(state) {
     const gain = (state.exposure || 1) * (1 + 0.38 * (state.beat || 0));
     const lutKey = `${this.palVersion}:${q(state.palMix || 0, 3)}:${state.post}:${q(state.edge || 0, 3)}:${q(gain, 3)}`;
     if (lutKey !== this.lutKey) {
@@ -411,6 +422,11 @@ export class Presenter {
       this.lutPal = built.pal;
       this.lutKey = lutKey;
     }
+    return { gain, lutKey };
+  }
+
+  colorize(state) {
+    const { gain, lutKey } = this.lutFor(state);
     const phase = state.phase || 0;
     const shown = this.shown;
     const phaseStep = Math.floor((phase - Math.floor(phase)) * 1024);
@@ -475,6 +491,60 @@ export class Presenter {
       const sy = (1 - qy / state.radius) * 0.5 * H;
       return [sx, sy];
     };
+  }
+
+  /**
+   * One finished export frame at w x h: the full job without guessing or GPU,
+   * then the band-edge antialias pass, painted into a fresh ImageData. The
+   * interactive view must not call render() meanwhile; it shares the workers.
+   */
+  async renderStill(state, w, h) {
+    this.cancelStill();
+    this.job = null;
+    this.gen += 1;
+    this.lastJobSig = "";
+    this.aaSig = "";
+    const job = this.makeJob({ ...state, soft: false, guess: "off", capture: false }, w, h, "still");
+    let buf = await this.runStill(job);
+    if (state.antialias !== false && this.workers.length && antialiasEligible(job.state)) {
+      const aa = this.antialiasJob({ buf, view: job.view, ident: job.ident, sig: "still-aa", state: job.state });
+      buf = await this.runStill(aa);
+    }
+    const image = new ImageData(w, h);
+    const out32 = new Uint32Array(image.data.buffer);
+    const { gain } = this.lutFor(state);
+    const phase = state.phase || 0;
+    const interior = interiorColor(this.lutPal, phase, state.colorInterior, gain);
+    paint(buf, out32, this.lut, phase, state.density ?? 0.045, interior, state.colorMode | 0, job.state.iters || 100);
+    return image;
+  }
+
+  runStill(job) {
+    return new Promise((resolve, reject) => {
+      job.still = true;
+      job.resolve = resolve;
+      job.reject = reject;
+      if (job.aa) {
+        this.job = job;
+        while (this.idle.length && job.next < job.chunks.length) this.dispatch(this.idle.pop(), job);
+      } else {
+        this.startJob(job);
+      }
+      const pump = () => {
+        if (this.job !== job) return;
+        if (job.kind === "main") this.stepMain(job);
+        setTimeout(pump, job.kind === "main" ? 0 : 40);
+      };
+      pump();
+    });
+  }
+
+  cancelStill() {
+    const job = this.job;
+    if (!job?.still) return;
+    this.job = null;
+    this.gen += 1;
+    job.reject(new Error("cancelled"));
   }
 
   reframe(S, ox, oy) {
