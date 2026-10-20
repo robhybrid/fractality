@@ -225,6 +225,17 @@ export class Presenter {
         this.disableGpu();
       }
     }
+    const plan = this.tiles ? this.tiles.plan(this.tiles.gpu, job.state, h) : null;
+    if (plan) {
+      try {
+        job.kind = "tiles";
+        job.tiles = this.tiles.gpu.begin(job.buf, job.state, plan === "perturb" ? this.tiles.pickReference(job.state, job.state.iters) : null);
+        this.label = `GPU tiles (${plan})`;
+        return;
+      } catch {
+        this.tiles = null;
+      }
+    }
     this.label = this.cpuLabel();
     if (!this.workers.length) {
       job.kind = "main";
@@ -407,9 +418,11 @@ export class Presenter {
       this.startAntialias();
     }
     if (this.job?.kind === "main") this.stepMain(this.job);
+    else if (this.job?.kind === "tiles") this.stepTiles(this.job);
     this.draw(state, W, H);
     if (this.gpuState === "idle") this.armGpu();
     if (this.glpState === "idle") this.armGlPresent();
+    if (this.tilesState === undefined) this.armTiles();
     const result = {
       pending: !!this.job,
       viewW: this.shown?.buf.w || 0,
@@ -536,6 +549,50 @@ export class Presenter {
     }
   }
 
+  stepTiles(job) {
+    const gpu = this.tiles?.gpu;
+    if (!gpu || gpu.lost) {
+      this.tiles = null;
+      job.kind = "main";
+      job.y = 0;
+      return;
+    }
+    try {
+      if (!gpu.step(job.tiles)) return;
+    } catch {
+      this.tiles = null;
+      job.kind = "main";
+      job.y = 0;
+      return;
+    }
+    this.tileStats = { ms: performance.now() - job.started, tiles: job.tiles.tiles, maxTileMs: job.tiles.gpuMs, rate: gpu.rate, pixels: job.buf.w * job.buf.h, iters: job.tiles.iters, perturb: !!job.tiles.orbit };
+    shadeLevels(job.buf);
+    this.finish(job);
+  }
+
+  /** Opt-in (?gpu=tiles): tiled WebGL1 escape fill, including perturbation. */
+  armTiles() {
+    this.tilesState = "off";
+    if (this.dead || new URLSearchParams(location.search).get("gpu") !== "tiles") return;
+    this.tilesState = "pending";
+    import("./gpuescape.js")
+      .then((mod) => {
+        if (this.dead) return;
+        const gpu = mod.createGpuEscape();
+        if (!gpu || !mod.escapeAgrees(gpu, createBuffer, fillAll)) {
+          gpu?.destroy();
+          this.tilesState = "failed";
+          return;
+        }
+        this.tiles = { gpu, plan: mod.tilesPlan, pickReference: mod.pickReference };
+        this.tilesState = "ready";
+        this.lastJobSig = "";
+      })
+      .catch(() => {
+        this.tilesState = "failed";
+      });
+  }
+
   dropGlPresent() {
     try {
       this.glp?.destroy();
@@ -660,6 +717,8 @@ export class Presenter {
     this.dead = true;
     this.disableGpu();
     this.dropGlPresent();
+    this.tiles?.gpu.destroy();
+    this.tiles = null;
     for (const worker of this.workers) worker.terminate();
     this.workers = [];
   }

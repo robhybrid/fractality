@@ -260,6 +260,7 @@ export function createGpuEscape() {
   });
   /** Pixel-iterations per millisecond, refined by synchronous probes. */
   let rate = 2e5;
+  let latency = Infinity;
   const budgetMs = 6;
 
   function ensureTarget(w, h) {
@@ -347,7 +348,7 @@ export function createGpuEscape() {
 
   function nextTile(job) {
     if (job.y >= job.h) return null;
-    const pixels = Math.max(256, Math.floor((rate * budgetMs) / job.iters));
+    const pixels = Math.max(1024, Math.floor((rate * budgetMs) / job.iters));
     const tw = Math.min(job.w, pixels);
     let th = Math.max(1, Math.floor(pixels / tw));
     if (tw < job.w) th = 1;
@@ -400,10 +401,11 @@ export function createGpuEscape() {
       job.tiles += 1;
       if (probe) {
         readTile(job, t);
-        const ms = Math.max(0.05, performance.now() - t0);
+        const ms = performance.now() - t0;
         job.gpuMs = Math.max(job.gpuMs, ms);
-        const measured = (t.w * t.h * job.iters) / ms;
-        rate = Math.max(2e3, Math.min(rate * 4, measured));
+        latency = Math.min(latency, ms);
+        const measured = (t.w * t.h * job.iters) / Math.max(0.25, ms - latency * 0.9);
+        rate = Math.max(2e4, Math.min(rate * 4, measured));
       } else {
         job.pending = t;
       }
@@ -419,4 +421,37 @@ export function createGpuEscape() {
       gl.getExtension("WEBGL_lose_context")?.loseContext();
     },
   };
+}
+
+/** Direct f32 while pixels are coarse; perturbation (Mandelbrot, power 2) below that. */
+export function tilesPlan(gpu, state, h) {
+  if (!gpu || state.family !== "escape" || (state.formula | 0) >= 8 || state.deep) return null;
+  if ((state.iters | 0) > MAX_GPU_ITER) return null;
+  const px = (2 * state.radius) / h;
+  if (px > 3e-6 * Math.max(1, Math.hypot(state.cx, state.cy))) return "direct";
+  const square = Math.abs((state.power || 2) - 2) < 0.0008;
+  if ((state.formula | 0) === 0 && square && gpu.floatTex && state.radius > 1e-28) return "perturb";
+  return null;
+}
+
+/** Small probe frames against the CPU kernel; both kernels must agree. */
+export function escapeAgrees(gpu, createBuffer, fillAll) {
+  const views = [
+    { cx: -0.75, cy: 0, radius: 1.35, iters: 64, orbit: false },
+    { cx: -0.743643887037151, cy: 0.13182590420533, radius: 3e-5, iters: 400, orbit: true },
+  ];
+  for (const v of views) {
+    const state = { family: "escape", formula: 0, rotation: 0, power: 2, bailout: 64, skipInterior: true, juliaRe: 0, juliaIm: 0, extra: 0, w: 32, h: 18, ...v };
+    if (v.orbit && !gpu.floatTex) continue;
+    const cpu = createBuffer(32, 18);
+    const out = createBuffer(32, 18);
+    fillAll(cpu, state);
+    gpu.fill(out, state, v.orbit ? pickReference(state, state.iters) : null);
+    let bad = 0;
+    for (let i = 0; i < 32 * 18; i += 1) {
+      if (cpu.alpha[i] !== out.alpha[i] || (cpu.alpha[i] && Math.abs(cpu.iter[i] - out.iter[i]) > 1)) bad += 1;
+    }
+    if (bad > 32 * 18 * 0.1) return false;
+  }
+  return true;
 }
