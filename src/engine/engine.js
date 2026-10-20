@@ -28,7 +28,7 @@ class Engine {
     this.iterScale = 1;
     this.pixelScale = 1;
     this.throttled = false;
-    this.detail = 0.82;
+    this.detail = 1;
     this.time = 0;
     this.hidden = false;
     this.paused = false;
@@ -524,6 +524,7 @@ class Engine {
         phase: this.phase,
         density: this.density,
         soft,
+        quality: this.detail * this.pixelScale,
         blur,
         edge: this.post === 0 ? 0 : this.edge,
         beat: this.beatPulse,

@@ -10,6 +10,8 @@ export function createBuffer(w, h) {
     extra: new Float32Array(w * h),
     alpha: new Uint8Array(w * h),
     source: 0,
+    y0: 0,
+    level: null,
   };
 }
 
@@ -107,7 +109,7 @@ function paintEscape(buf, idx, escaped, smooth, stripe) {
 
 function fillEscape(buf, state, y0, y1) {
   const p = planeOf(state);
-  const n = clampIter(state.iters, 64);
+  const n = clampIter(state.iters, 1200);
   const bail = Math.max(state.bailout || 4, 4);
   const power = Math.max(state.power || 2, 0.35);
   const formula = state.formula | 0;
@@ -123,7 +125,7 @@ function fillEscape(buf, state, y0, y1) {
     const row = rowStart(p, y);
     let wx = row.wx;
     let wy = row.wy;
-    const o = y * w;
+    const o = (y - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
       let cx;
       let cy;
@@ -222,14 +224,14 @@ function fillSpecial(buf, state, y0, y1) {
   const power = Math.max(state.power || 2, 0.35);
   const bail = Math.max(state.bailout || 4, 4);
   const extraK = state.extra || 0;
-  const n = clampIter(state.iters, formula === 8 ? 32 : formula === 11 ? 48 : 64);
+  const n = clampIter(state.iters, formula === 8 ? 40 : formula === 11 ? 96 : 400);
   const w = buf.w;
   buf.source = 0;
   for (let y = y0; y < y1; y += 1) {
     const row = rowStart(p, y);
     let wx = row.wx;
     let wy = row.wy;
-    const o = y * w;
+    const o = (y - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
       const idx = o + x;
       if (formula === 11) lyapunov(buf, idx, wx, wy, n);
@@ -334,7 +336,7 @@ function fillShape(buf, state, y0, y1) {
     const row = rowStart(p, y);
     let wx = row.wx;
     let wy = row.wy;
-    const o = y * w;
+    const o = (y - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
       const idx = o + x;
       if (formula === 12) sierpinski(buf, idx, wx, wy, n);
@@ -466,7 +468,7 @@ function fillIfs(buf, state) {
   buf.iter.fill(0);
   buf.alpha.fill(0);
   const kind = state.formula | 0;
-  const n = Math.max(2000, Math.min(40000, state.ifsPoints | 0 || 20000));
+  const n = Math.max(2000, Math.min(3000000, state.ifsPoints | 0 || 20000));
   const burn = 16;
   let x = 0;
   let y = 0;
@@ -535,8 +537,8 @@ function fillIfs(buf, state) {
     if (i < burn) continue;
     const dx = x - p.cx;
     const dy = y - p.cy;
-    const rx = dx * p.c - dy * p.s;
-    const ry = dx * p.s + dy * p.c;
+    const rx = dx * p.c + dy * p.s;
+    const ry = -dx * p.s + dy * p.c;
     const ndcX = rx / (p.radius * aspect);
     const ndcY = ry / p.radius;
     splat(buf, (ndcX * 0.5 + 0.5) * buf.w, (0.5 - ndcY * 0.5) * buf.h, shade);
@@ -546,7 +548,7 @@ function fillIfs(buf, state) {
 function fillRay(buf, state, y0, y1) {
   const cam = state.camera || { eye: [0, 0, 3], forward: [0, 0, -1], right: [1, 0, 0], up: [0, 1, 0] };
   const w = buf.w;
-  const h = buf.h;
+  const h = state.h || buf.h;
   const aspect = w / h;
   const steps = Math.max(6, Math.min(18, state.steps | 0 || 12));
   const iters = Math.max(3, Math.min(5, state.rayIters | 0 || 4));
@@ -560,7 +562,7 @@ function fillRay(buf, state, y0, y1) {
   for (let y = y0; y < y1; y += 1) {
     const gy = h - 1 - y;
     const uvY = ((gy + 0.5) / h) * 2 - 1;
-    const o = y * w;
+    const o = (y - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
       const uvX = ((x + 0.5) / w) * 2 - 1;
       let dx = cam.forward[0] * 1.35 + cam.right[0] * uvX * aspect + cam.up[0] * uvY;
@@ -713,122 +715,43 @@ function mapTetra(px, py, pz, iters) {
   return (Math.hypot(x, y, z) - 1.45) / scale;
 }
 
-function frac(t) {
-  return t - Math.floor(t);
-}
-
-function sampleInto(tex, t, out) {
-  const u = frac(t);
-  const x = u * 255;
-  const i = x | 0;
-  const f = x - i;
-  const j = (i + 1) & 255;
-  const a = i * 4;
-  const b = j * 4;
-  out[0] = (tex[a] + (tex[b] - tex[a]) * f) / 255;
-  out[1] = (tex[a + 1] + (tex[b + 1] - tex[a + 1]) * f) / 255;
-  out[2] = (tex[a + 2] + (tex[b + 2] - tex[a + 2]) * f) / 255;
-}
-
 function smoothstep(e0, e1, x) {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 }
 
-function byte(v) {
-  if (v < 0) return 0;
-  if (v > 255) return 255;
-  return v | 0;
-}
-
-export function colorize(buf, out, palA, palB, state) {
-  const { w, h, iter, extra, alpha, source } = buf;
-  const phase = state.phase || 0;
-  const density = state.density ?? 0.045;
-  const mix = state.palMix || 0;
-  const exposure = (state.exposure || 1) * (1 + 0.38 * (state.beat || 0));
-  const edge = state.post === 0 ? 0 : state.edge || 0;
-  const interior = !!state.colorInterior;
-  const post = state.post | 0;
-  const n = w * h;
-  for (let i = 0; i < n; i += 1) {
-    let r;
-    let g;
-    let b;
-    if (source === 1) {
-      sampleInto(palA, phase + Math.log(1 + iter[i] * 16) * (0.18 + density * 6), C1);
-      if (mix > 0.001) {
-        sampleInto(palB, phase + Math.log(1 + iter[i] * 16) * (0.18 + density * 6), C2);
-        C1[0] += (C2[0] - C1[0]) * mix;
-        C1[1] += (C2[1] - C1[1]) * mix;
-        C1[2] += (C2[2] - C1[2]) * mix;
-      }
-      const k = smoothstep(0.015, 0.22, iter[i]);
-      r = C1[0] * k;
-      g = C1[1] * k;
-      b = C1[2] * k;
-    } else if (!alpha[i]) {
-      if (interior) {
-        sampleInto(palA, phase * 0.22, C1);
-        if (mix > 0.001) {
-          sampleInto(palB, phase * 0.22, C2);
-          C1[0] += (C2[0] - C1[0]) * mix;
-          C1[1] += (C2[1] - C1[1]) * mix;
-          C1[2] += (C2[2] - C1[2]) * mix;
-        }
-        r = C1[0] * 0.32;
-        g = C1[1] * 0.32;
-        b = C1[2] * 0.32;
-      } else {
-        r = 0.012;
-        g = 0.013;
-        b = 0.02;
-      }
-    } else {
-      const it = iter[i];
-      const t = it * density + phase;
-      sampleInto(palA, t, C1);
-      sampleInto(palA, t + 0.16, C2);
-      if (mix > 0.001) {
-        sampleInto(palB, t, C3);
-        C1[0] += (C3[0] - C1[0]) * mix;
-        C1[1] += (C3[1] - C1[1]) * mix;
-        C1[2] += (C3[2] - C1[2]) * mix;
-        sampleInto(palB, t + 0.16, C3);
-        C2[0] += (C3[0] - C2[0]) * mix;
-        C2[1] += (C3[1] - C2[1]) * mix;
-        C2[2] += (C3[2] - C2[2]) * mix;
-      }
-      const m = (extra[i] || 0) * 0.72;
-      r = C1[0] + (C2[0] - C1[0]) * m;
-      g = C1[1] + (C2[1] - C1[1]) * m;
-      b = C1[2] + (C2[2] - C1[2]) * m;
-      if (edge > 0.01 && i % w < w - 1 && alpha[i + 1]) {
-        const e = Math.min(1, Math.abs(iter[i + 1] - it) / 4);
-        sampleInto(palA, t + 0.05, C3);
-        r += C3[0] * e * edge;
-        g += C3[1] * e * edge;
-        b += C3[2] * e * edge;
-      }
-      if (post === 2) {
-        sampleInto(palA, t - 0.012, C1);
-        sampleInto(palA, t, C2);
-        sampleInto(palA, t + 0.014, C3);
-        r = r * 0.3 + C1[0] * 0.7;
-        g = g * 0.3 + C2[1] * 0.7;
-        b = b * 0.3 + C3[2] * 0.7;
-      }
+/**
+ * Precomputes one byte per pixel so recoloring is a table lookup.
+ * Escape levels 0-63 are stripe (16) x edge (4). IFS levels 64-79 are
+ * density brightness, and IFS iter values become log density.
+ */
+export function shadeLevels(buf) {
+  const { w, iter, extra, alpha } = buf;
+  const n = iter.length;
+  if (!buf.level || buf.level.length !== n) buf.level = new Uint8Array(n);
+  const level = buf.level;
+  if (buf.source === 1) {
+    for (let i = 0; i < n; i += 1) {
+      const v = iter[i];
+      level[i] = 64 + Math.round(smoothstep(0.015, 0.22, v) * 15);
+      iter[i] = Math.log(1 + v * 16);
+      alpha[i] = 1;
     }
-    const x = i % w;
-    const y = (i / w) | 0;
-    const qx = (x / Math.max(1, w - 1)) * 2 - 1;
-    const qy = (y / Math.max(1, h - 1)) * 2 - 1;
-    const vig = 0.78 + 0.22 * smoothstep(1.28, 0.28, qx * qx + qy * qy);
-    const k = vig * exposure * 255;
-    const o = i * 4;
-    out[o] = byte(r * k);
-    out[o + 1] = byte(g * k);
-    out[o + 2] = byte(b * k);
-    out[o + 3] = 255;
+    return;
+  }
+  for (let i = 0; i < n; i += 1) {
+    if (!alpha[i]) {
+      level[i] = 0;
+      continue;
+    }
+    let m = Math.round((extra[i] || 0) * 15);
+    if (m > 15) m = 15;
+    if (m < 0) m = 0;
+    let el = 0;
+    if (i % w < w - 1 && alpha[i + 1]) {
+      const e = Math.abs(iter[i + 1] - iter[i]) * 0.25;
+      el = e >= 1 ? 3 : Math.round(e * 3);
+    }
+    level[i] = el * 16 + m;
   }
 }

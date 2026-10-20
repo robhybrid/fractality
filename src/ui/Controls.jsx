@@ -103,7 +103,7 @@ export function Controls({ snap, engine }) {
       <Slider
         label="Iterations"
         min={24}
-        max={64}
+        max={400}
         step={1}
         value={snap.autoIter ? snap.iters : snap.iterBias}
         disabled={snap.autoIter}
@@ -112,7 +112,7 @@ export function Controls({ snap, engine }) {
       />
       <label className="check">
         <input type="checkbox" checked={snap.autoIter} onChange={(event) => engine.setAutoIter(event.target.checked)} />
-        Auto iterations, hard ceiling 64
+        Auto iterations, rising with zoom
       </label>
       <Slider label="Palette speed" min={-2} max={2} step={0.01} value={snap.paletteSpeed} onChange={(v) => engine.setPaletteSpeed(v)} />
       <Slider label="Color density" min={0.004} max={0.2} step={0.001} value={snap.density} onChange={(v) => engine.setDensity(v)} />

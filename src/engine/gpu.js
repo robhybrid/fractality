@@ -5,8 +5,7 @@ void main() {
 }
 `;
 
-const FRAG = `
-precision mediump float;
+const FRAG_BODY = `
 uniform vec2 uResolution;
 uniform vec2 uCenter;
 uniform float uRadius;
@@ -112,8 +111,10 @@ export function createGpu() {
     failIfMajorPerformanceCaveat: false,
   });
   if (!gl) return null;
+  const high = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+  if (!high || high.precision < 23) return null;
   const vs = compile(gl, gl.VERTEX_SHADER, VERT);
-  const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, `precision highp float;\n${FRAG_BODY}`);
   if (!vs || !fs) return null;
   const prog = gl.createProgram();
   gl.attachShader(prog, vs);

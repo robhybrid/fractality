@@ -26,6 +26,7 @@ export default function App() {
   return (
     <div className="app">
       <canvas ref={canvasRef} tabIndex={0} aria-label="Fractal view" />
+      <div className="vignette" aria-hidden="true" />
       {snap?.error ? <div className="error">{snap.error}</div> : null}
       {snap?.name && !snap.hidden ? <Controls snap={snap} engine={engineRef.current} /> : null}
     </div>

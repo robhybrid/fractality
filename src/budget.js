@@ -1,18 +1,17 @@
 /**
- * Thermal budget for a 2019 16-inch MacBook Pro on Intel UHD Graphics 630
- * (1536 MB shared). The fractal pass is the expensive one. Palette drift is
- * a fullscreen color lookup and stays cheap.
- *
- * The browser is asked for the low-power GPU (the integrated chip, not a
- * discrete card). Nothing here is allowed to exceed these ceilings, even
- * when frames are fast.
+ * Ceilings for a 2019 16-inch MacBook Pro (Intel UHD Graphics 630, 1536 MB
+ * shared). Fractal values are computed by CPU workers at up to these sizes
+ * once the view settles; while it moves, the presenter shrinks the work to
+ * keep a new frame arriving every few display frames. The optional GPU pass
+ * only runs the simple escape formulas at shallow zoom, where 32-bit floats
+ * are still exact enough.
  */
 export const BUDGET = {
-  maxPixels2d: 1280 * 720,
-  maxPixels3d: 512 * 288,
-  maxPixelsIfs: 960 * 540,
-  displayPixels: 1600 * 900,
-  maxIter: 64,
+  maxPixels2d: 1920 * 1200,
+  maxPixels3d: 560 * 315,
+  maxPixelsIfs: 1920 * 1200,
+  displayPixels: 1920 * 1200,
+  maxIter: 400,
   minIter: 24,
   defaultIter: 48,
   maxSteps: 28,
@@ -22,9 +21,9 @@ export const BUDGET = {
   boxIter: 6,
   mengerIter: 4,
   tetraIter: 8,
-  maxIfsPoints: 50000,
+  maxIfsPoints: 2000000,
   interactArea: 0.38,
-  minRadius: 0.00008,
+  minRadius: 1e-11,
   maxRadius: 16,
   minDist: 0.55,
   maxDist: 14,
