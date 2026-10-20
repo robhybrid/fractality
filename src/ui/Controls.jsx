@@ -150,6 +150,10 @@ export function Controls({ snap, engine }) {
               ))}
             </select>
           </label>
+          <label className="check">
+            <input type="checkbox" checked={!!snap.deRelief} onChange={(event) => engine.setDeRelief(event.target.checked)} />
+            Distance relief: 3D light and boundary filaments on any mode
+          </label>
           <div className="chips">
             {snap.palettes.map((item) => (
               <button key={item.name} type="button" className={item.index === snap.paletteIndex ? "on" : ""} onClick={() => engine.setPalette(item.index)}>
