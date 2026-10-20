@@ -177,6 +177,9 @@ export function Controls({ snap, engine }) {
         <button type="button" className={snap.breathe ? "on" : ""} onClick={() => engine.setBreathe(!snap.breathe)}>
           Y power breathe
         </button>
+        <button type="button" className={snap.banded ? "on" : ""} onClick={() => engine.setBanded(!snap.banded)}>
+          ` {snap.banded ? "solid bands" : "smooth gradient"}
+        </button>
         <button type="button" className={snap.colorInterior ? "on" : ""} onClick={() => engine.setColorInterior(!snap.colorInterior)}>
           D color the lake
         </button>
@@ -215,6 +218,7 @@ export function Controls({ snap, engine }) {
           <li><kbd>F</kbd> fullscreen</li>
           <li><kbd>S</kbd> save png</li>
           <li><kbd>\</kbd> random gradient</li>
+          <li><kbd>`</kbd> bands or smooth</li>
           <li><kbd>shift</kbd> arrows edit stops</li>
         </ul>
       </details>

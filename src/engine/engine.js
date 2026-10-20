@@ -40,10 +40,11 @@ class Engine {
     this.paletteSpeed = 0.08;
     this.animatePalette = true;
     this.phase = 0;
-    this.density = 0.045;
+    this.density = 0.085;
     this.exposure = 1.12;
     this.edge = 0.55;
     this.post = 1;
+    this.banded = true;
     this.colorInterior = false;
     this.autoIter = true;
     this.iterBias = 48;
@@ -532,6 +533,7 @@ class Engine {
         palMix: this.palMix,
         colorInterior: this.colorInterior,
         post: this.post,
+        banded: this.banded,
         capture: this.capture,
       });
       this.error = "";
@@ -626,6 +628,7 @@ class Engine {
       audioOn: this.audio.active,
       colorInterior: this.colorInterior,
       post: this.post,
+      banded: this.banded,
       detail: this.detail,
       paused: this.paused,
       stops: this.stops,
@@ -719,6 +722,8 @@ class Engine {
     else if (key === "d" || key === "D") {
       this.colorInterior = !this.colorInterior;
       this.publish(true);
+    } else if (key === "`" || key === "~") {
+      this.setBanded(!this.banded);
     } else if (key === "w" || key === "W") {
       this.post = (this.post + 1) % 3;
       this.publish(true);
@@ -809,6 +814,11 @@ class Engine {
 
   setExtra(value) {
     this.extraT = clamp(value, -2, 3);
+    this.publish(true);
+  }
+
+  setBanded(value) {
+    this.banded = value;
     this.publish(true);
   }
 
