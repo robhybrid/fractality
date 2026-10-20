@@ -142,7 +142,7 @@ const INTERIOR = 0xffffffff;
  * Table row and step for every pixel, before the phase shift. Built once per
  * frame and color setting, so an animated palette only adds the phase.
  */
-function indexFor(buf, mode, density, maxIter) {
+export function indexFor(buf, mode, density, maxIter) {
   const key = `${mode}:${density}:${maxIter}:${buf.source}`;
   if (buf.pidx && buf.pidxKey === key) return buf.pidx;
   const { iter, alpha, level, band } = buf;

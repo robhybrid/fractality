@@ -377,7 +377,7 @@ export class MovieMaker {
 
   thumbnail() {
     try {
-      const src = this.engine.canvas;
+      const src = this.engine.renderer.pictureCanvas?.() || this.engine.canvas;
       const c = document.createElement("canvas");
       c.width = 112;
       c.height = Math.max(1, Math.round((112 * src.height) / Math.max(1, src.width)));
