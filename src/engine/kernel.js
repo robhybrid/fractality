@@ -1,3 +1,5 @@
+import { deepContext, deepPixel } from "./deep.js";
+
 const C1 = [0, 0, 0];
 const C2 = [0, 0, 0];
 const C3 = [0, 0, 0];
@@ -30,6 +32,7 @@ export function fillRows(buf, state, y0, y1) {
   }
   if (state.formula >= 12) fillShape(buf, state, y0, y1);
   else if (state.formula >= 8) fillSpecial(buf, state, y0, y1);
+  else if (state.deep) fillEscape(buf, state, y0, y1, deepPixel, deepContext(state));
   else fillEscape(buf, state, y0, y1);
 }
 
@@ -220,9 +223,8 @@ function escapePixel(buf, idx, wx, wy, c) {
  * fills when all neighbors are inside the set (always safe in practice);
  * "full" also fills matching escape bands, used while the view is moving.
  */
-function fillEscape(buf, state, y0, y1) {
+function fillEscape(buf, state, y0, y1, pixel = escapePixel, c = escapeContext(state)) {
   const p = planeOf(state);
-  const c = escapeContext(state);
   const w = buf.w;
   buf.source = 0;
   const guess = state.guess || (state.soft ? "full" : "off");
@@ -231,7 +233,7 @@ function fillEscape(buf, state, y0, y1) {
     for (let y = y0; y < y1; y += 1) {
       const row = rowStart(p, y);
       const o = (y - buf.y0) * w;
-      for (let x = 0; x < w; x += 1) escapePixel(buf, o + x, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
+      for (let x = 0; x < w; x += 1) pixel(buf, o + x, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
     }
     return;
   }
@@ -246,7 +248,7 @@ function fillEscape(buf, state, y0, y1) {
     const row = starts[ly];
     const o = (y0 + ly - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
-      if (coarseCol(x)) escapePixel(buf, o + x, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
+      if (coarseCol(x)) pixel(buf, o + x, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
     }
   }
   for (let ly = 0; ly < rows; ly += 1) {
@@ -289,7 +291,7 @@ function fillEscape(buf, state, y0, y1) {
           continue;
         }
       }
-      escapePixel(buf, idx, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
+      pixel(buf, idx, row.wx + x * row.dwx, row.wy + x * row.dwy, c);
     }
   }
 }
