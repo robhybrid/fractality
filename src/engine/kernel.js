@@ -107,7 +107,7 @@ function paintEscape(buf, idx, escaped, smooth, stripe) {
   buf.alpha[idx] = 1;
 }
 
-function escapeContext(state) {
+export function escapeContext(state) {
   const power = Math.max(state.power || 2, 0.35);
   const formula = state.formula | 0;
   const square = Math.abs(power - 2) < 0.0008;
@@ -133,7 +133,7 @@ function escapeContext(state) {
  * skipped outright; other interior points stop as soon as the orbit repeats
  * (Brent's cycle check: compare against a point saved at powers of two).
  */
-function escapePixel(buf, idx, wx, wy, c) {
+export function escapePixel(buf, idx, wx, wy, c) {
   let cx;
   let cy;
   let zx;

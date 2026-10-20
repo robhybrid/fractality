@@ -90,33 +90,114 @@ export function interiorColor(pal, phase, colorInterior, gain) {
   return pack(c[0] * k, c[1] * k, c[2] * k);
 }
 
-/** Color modes: 0 solid band per iteration, 1 bands blended smoothly, 2 gradient with stripes and edges. */
-export function paint(buf, out32, lut, phase, density, interior, mode = 0) {
-  const { iter, alpha, level } = buf;
+/**
+ * Per-pixel palette positions (in table steps, before the phase shift) for the
+ * modes that need the whole frame or a costly curve: exponentially mapped
+ * cyclic iterations, and histogram coloring (position = share of escaping
+ * pixels that escaped sooner, so bands stay evenly spread at any depth).
+ */
+export function remapFor(buf, mode, density, maxIter) {
+  const key = `${mode}:${density}:${maxIter}`;
+  if (buf.remap && buf.remapKey === key) return buf.remap;
+  const { iter, alpha } = buf;
   const n = iter.length;
-  const ph = (phase - Math.floor(phase)) * LUT_SIZE;
+  const out = buf.remap && buf.remap.length === n ? buf.remap : new Float32Array(n);
+  const scale = density / 0.085;
+  if (mode === 3) {
+    const N = 64 * scale;
+    const inv = 1 / Math.max(1, maxIter);
+    const k = LUT_SIZE / N;
+    for (let i = 0; i < n; i += 1) {
+      if (!alpha[i]) continue;
+      const v = (iter[i] * inv * N) ** 1.5;
+      out[i] = (v - Math.floor(v / N) * N) * k;
+    }
+  } else {
+    const bins = Math.max(2, Math.ceil(maxIter) + 2);
+    const hist = new Float64Array(bins + 1);
+    let total = 0;
+    for (let i = 0; i < n; i += 1) {
+      if (!alpha[i]) continue;
+      const b = Math.min(bins - 1, Math.max(0, Math.floor(iter[i])));
+      hist[b + 1] += 1;
+      total += 1;
+    }
+    for (let b = 1; b <= bins; b += 1) hist[b] += hist[b - 1];
+    const k = (Math.max(1, 2 * scale) * LUT_SIZE) / Math.max(1, total);
+    for (let i = 0; i < n; i += 1) {
+      if (!alpha[i]) continue;
+      const v = Math.min(bins - 1, Math.max(0, iter[i]));
+      const b = Math.floor(v);
+      out[i] = (hist[b] + (hist[b + 1] - hist[b]) * (v - b)) * k;
+    }
+  }
+  buf.remap = out;
+  buf.remapKey = key;
+  return out;
+}
+
+const INTERIOR = 0xffffffff;
+
+/**
+ * Table row and step for every pixel, before the phase shift. Built once per
+ * frame and color setting, so an animated palette only adds the phase.
+ */
+function indexFor(buf, mode, density, maxIter) {
+  const key = `${mode}:${density}:${maxIter}:${buf.source}`;
+  if (buf.pidx && buf.pidxKey === key) return buf.pidx;
+  const { iter, alpha, level, band } = buf;
+  const n = iter.length;
+  const out = buf.pidx && buf.pidx.length === n ? buf.pidx : new Uint32Array(n);
   const dens = (buf.source === 1 ? 0.18 + density * 6 : density) * LUT_SIZE;
   const mask = LUT_SIZE - 1;
-  if (mode === 0 && buf.source !== 1) {
-    for (let i = 0; i < n; i += 1) {
-      if (alpha[i] === 0) out32[i] = interior;
-      else out32[i] = lut[((Math.floor(iter[i]) * dens + ph) | 0) & mask];
-    }
-    return;
-  }
-  if (mode === 1 && buf.source !== 1) {
-    for (let i = 0; i < n; i += 1) {
-      if (alpha[i] === 0) out32[i] = interior;
-      else out32[i] = lut[((iter[i] * dens + ph) | 0) & mask];
-    }
-    return;
-  }
+  const flat = buf.source !== 1;
+  const remap = flat && mode >= 3 ? remapFor(buf, mode, density, maxIter) : null;
   for (let i = 0; i < n; i += 1) {
     if (alpha[i] === 0) {
-      out32[i] = interior;
-    } else {
-      const idx = ((iter[i] * dens + ph) | 0) & mask;
-      out32[i] = lut[(level[i] << 10) | idx];
+      out[i] = INTERIOR;
+      continue;
     }
+    let step;
+    let row = 0;
+    if (remap) step = remap[i];
+    else if (flat && mode === 0) step = (band ? band[i] : Math.floor(iter[i])) * dens;
+    else step = iter[i] * dens;
+    if (!flat || mode === 2) row = level[i];
+    out[i] = (row << 10) | ((step | 0) & mask);
+  }
+  buf.pidx = out;
+  buf.pidxKey = key;
+  return out;
+}
+
+/**
+ * Color modes: 0 solid band per iteration, 1 bands blended smoothly, 2 gradient
+ * with stripes and edges, 3 exponential cyclic, 4 histogram.
+ */
+export function paint(buf, out32, lut, phase, density, interior, mode = 0, maxIter = 100) {
+  const pidx = indexFor(buf, mode, density, maxIter);
+  const n = pidx.length;
+  const ph = ((phase - Math.floor(phase)) * LUT_SIZE) | 0;
+  const mask = LUT_SIZE - 1;
+  const rows = ~mask;
+  for (let i = 0; i < n; i += 1) {
+    const v = pidx[i];
+    out32[i] = v === INTERIOR ? interior : lut[(v & rows) | ((v + ph) & mask)];
+  }
+  if (buf.partial) blendCover(out32, buf.partial, buf.cover, interior);
+}
+
+function blendCover(out32, partial, cover, interior) {
+  const ir = interior & 255;
+  const ig = (interior >>> 8) & 255;
+  const ib = (interior >>> 16) & 255;
+  for (let j = 0; j < partial.length; j += 1) {
+    const i = partial[j];
+    const a = cover[i];
+    const c = out32[i];
+    const r = ir + ((((c & 255) - ir) * a) >> 8);
+    const g = ig + (((((c >>> 8) & 255) - ig) * a) >> 8);
+    const b = ib + (((((c >>> 16) & 255) - ib) * a) >> 8);
+    out32[i] = (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
   }
 }

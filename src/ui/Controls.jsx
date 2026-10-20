@@ -75,6 +75,7 @@ export function Controls({ snap, engine }) {
         {snap.viewW}×{snap.viewH} · {snap.iters} {snap.family === "ray" ? "steps" : "iters"}
         {" · "}
         {snap.backend || "CPU"}
+        {snap.antialiased ? " · antialiased" : ""}
         {snap.throttled ? " · easing off, frames were slow" : ""}
         {snap.paused ? " · paused" : ""}
       </p>

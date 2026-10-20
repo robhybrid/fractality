@@ -1,4 +1,5 @@
 import { BUDGET } from "../budget.js";
+import { antialiasEligible } from "./antialias.js";
 import { fitSize } from "./color.js";
 import { createBuffer, fillAll, fillRows, shadeLevels } from "./kernel.js";
 import { buildLut, interiorColor, paint } from "./shade.js";
@@ -169,7 +170,9 @@ export class Presenter {
     if (state.family === "ray") cap = BUDGET.maxPixels3d;
     else if (state.family === "ifs") cap = BUDGET.maxPixelsIfs;
     const full = Math.min(W * H, cap) * quality;
-    const area = state.soft ? full * this.motionShare : full;
+    let area = full;
+    if (state.soft) area = full * this.motionShare;
+    else if (!this.settled && full > BUDGET.settlePixels * 1.5) area = BUDGET.settlePixels * quality;
     return fitSize(W, H, Math.max(64 * 36, area));
   }
 
@@ -238,7 +241,56 @@ export class Presenter {
   dispatch(worker, job) {
     const [y0, y1] = job.chunks[job.next];
     job.next += 1;
-    worker.postMessage({ gen: job.gen, y0, y1, state: job.state });
+    if (!job.base) {
+      worker.postMessage({ gen: job.gen, y0, y1, state: job.state });
+      return;
+    }
+    const { w, h } = job.buf;
+    const b0 = Math.max(0, y0 - 1);
+    const b1 = Math.min(h, y1 + 1);
+    const src = job.base;
+    const base = {
+      y0: b0,
+      iter: src.iter.slice(b0 * w, b1 * w),
+      extra: src.extra.slice(b0 * w, b1 * w),
+      alpha: src.alpha.slice(b0 * w, b1 * w),
+    };
+    worker.postMessage({ gen: job.gen, y0, y1, state: job.state, base }, [base.iter.buffer, base.extra.buffer, base.alpha.buffer]);
+  }
+
+  /** Final pass once a frame has settled at full size: extra samples on band edges. */
+  startAntialias() {
+    const { buf, view, ident, sig, state } = this.shown;
+    const { w, h } = buf;
+    const out = createBuffer(w, h);
+    out.iter.set(buf.iter);
+    out.extra.set(buf.extra);
+    out.alpha.set(buf.alpha);
+    out.level = buf.level;
+    out.band = new Float32Array(w * h);
+    out.cover = new Uint8Array(w * h);
+    const job = {
+      sig,
+      soft: false,
+      aa: true,
+      state,
+      buf: out,
+      base: buf,
+      view: { ...view },
+      ident,
+      started: performance.now(),
+      gen: ++this.gen,
+      next: 0,
+      remaining: 0,
+      chunks: [],
+      kind: "workers",
+    };
+    const rows = Math.max(4, Math.ceil(h / (this.workers.length * 8)));
+    for (let y = 0; y < h; y += rows) job.chunks.push([y, Math.min(h, y + rows)]);
+    job.remaining = job.chunks.length;
+    this.job = job;
+    this.aaSig = sig;
+    while (this.idle.length && job.next < job.chunks.length) this.dispatch(this.idle.pop(), job);
   }
 
   onChunk(worker, msg) {
@@ -252,7 +304,12 @@ export class Presenter {
     job.buf.iter.set(msg.iter, off);
     job.buf.extra.set(msg.extra, off);
     job.buf.alpha.set(msg.alpha, off);
-    job.buf.level.set(msg.level, off);
+    if (msg.aa) {
+      job.buf.band.set(msg.band, off);
+      job.buf.cover.set(msg.cover, off);
+    } else {
+      job.buf.level.set(msg.level, off);
+    }
     job.remaining -= 1;
     if (job.next < job.chunks.length) this.dispatch(worker, job);
     else this.idle.push(worker);
@@ -276,17 +333,25 @@ export class Presenter {
   finish(job) {
     if (this.job !== job) return;
     const ms = performance.now() - job.started;
-    if (job.soft) {
+    if (job.aa) {
+      const partial = [];
+      const { cover } = job.buf;
+      for (let i = 0; i < cover.length; i += 1) if (cover[i] > 0 && cover[i] < 255) partial.push(i);
+      job.buf.partial = Int32Array.from(partial);
+      this.aaMs = ms;
+    } else if (job.soft) {
       if (ms > 48) this.motionShare = Math.max(0.05, this.motionShare * 0.8);
       else if (ms < 24) this.motionShare = Math.min(1, this.motionShare * 1.12);
+    } else {
+      this.settled = true;
     }
     this.job = null;
-    this.show(job.buf, job.view, job.ident, job.sig);
+    this.show(job.buf, job.view, job.ident, job.sig, job.state);
   }
 
-  show(buf, view, ident, sig) {
+  show(buf, view, ident, sig, state) {
     this.serial = (this.serial || 0) + 1;
-    this.shown = { buf, view, ident, sig, serial: this.serial };
+    this.shown = { buf, view, ident, sig, state, serial: this.serial };
     if (this.scratch.width !== buf.w || this.scratch.height !== buf.h) {
       this.scratch.width = buf.w;
       this.scratch.height = buf.h;
@@ -322,6 +387,7 @@ export class Presenter {
       this.preview(state, W, H);
       this.lastJobSig = "";
     }
+    if (state.soft) this.settled = false;
     if (this.job && state.soft && !this.job.soft) {
       this.job = null;
       this.gen += 1;
@@ -329,7 +395,15 @@ export class Presenter {
     }
     const [w, h] = this.targetSize(state, W, H);
     const sig = `${paramKey(state)}|${geomKey(state)}|${w}x${h}`;
+    if (this.job?.aa && sig !== this.job.sig) {
+      this.job = null;
+      this.gen += 1;
+    }
     if (!this.job && sig !== this.lastJobSig) this.startJob(this.makeJob(state, w, h, sig));
+    const shown = this.shown;
+    if (!this.job && !state.soft && state.antialias !== false && this.workers.length && shown?.sig === sig && !shown.buf.cover && this.aaSig !== sig && antialiasEligible(shown.state)) {
+      this.startAntialias();
+    }
     if (this.job?.kind === "main") this.stepMain(this.job);
     this.draw(state, W, H);
     if (this.gpuState === "idle") this.armGpu();
@@ -364,7 +438,7 @@ export class Presenter {
     if (key === this.paintKey) return;
     this.paintKey = key;
     const interior = interiorColor(this.lutPal, phase, state.colorInterior, gain);
-    paint(shown.buf, this.out32, this.lut, phase, state.density ?? 0.045, interior, state.colorMode | 0);
+    paint(shown.buf, this.out32, this.lut, phase, state.density ?? 0.045, interior, state.colorMode | 0, shown.state?.iters || state.iters || 100);
     this.sctx.putImageData(this.image, 0, 0);
   }
 

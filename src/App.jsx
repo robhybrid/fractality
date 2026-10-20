@@ -17,6 +17,7 @@ export default function App() {
       return undefined;
     }
     engineRef.current = engine;
+    if (import.meta.env.DEV) window.__fractality = engine;
     return () => {
       engine.destroy();
       engineRef.current = null;

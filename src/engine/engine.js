@@ -686,6 +686,7 @@ class Engine {
       fps: Math.round(this.fps),
       throttled: this.throttled,
       backend: this.renderer.label || "CPU",
+      antialiased: !!this.renderer.shown?.buf.cover,
       phase: this.phase,
       viewW: this.view.viewW || 0,
       viewH: this.view.viewH || 0,

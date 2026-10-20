@@ -7,10 +7,11 @@
  * are still exact enough.
  */
 export const BUDGET = {
-  maxPixels2d: 1920 * 1200,
+  maxPixels2d: 3072 * 1920,
   maxPixels3d: 560 * 315,
   maxPixelsIfs: 1920 * 1200,
-  displayPixels: 1920 * 1200,
+  displayPixels: 3072 * 1920,
+  settlePixels: 1536 * 960,
   maxIter: 400,
   minIter: 24,
   defaultIter: 48,
