@@ -11,6 +11,12 @@ export const MODES = [
   { id: "trap", key: "O", label: "Trap", blurb: "Drag to move the orbit trap" },
 ];
 
+export const COLOR_MODES = [
+  { id: "bands", label: "Solid bands" },
+  { id: "blend", label: "Blended bands" },
+  { id: "gradient", label: "Gradient" },
+];
+
 const home = (x, y, r) => ({ x, y, r, rot: 0 });
 
 export const FRACTALS = [

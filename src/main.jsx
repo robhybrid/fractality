@@ -11,7 +11,7 @@ createRoot(document.getElementById("root")).render(
 
 if (import.meta.hot) {
   import.meta.hot.on("vite:beforeUpdate", (payload) => {
-    const changed = payload.updates?.some((update) => /\/src\/engine\//.test(update.path || ""));
+    const changed = payload.updates?.some((update) => /\/src\/(engine\/|data\.js|budget\.js)/.test(update.path || ""));
     if (changed) location.reload();
   });
 }

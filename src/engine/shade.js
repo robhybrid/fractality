@@ -90,16 +90,24 @@ export function interiorColor(pal, phase, colorInterior, gain) {
   return pack(c[0] * k, c[1] * k, c[2] * k);
 }
 
-export function paint(buf, out32, lut, phase, density, interior, banded = false) {
+/** Color modes: 0 solid band per iteration, 1 bands blended smoothly, 2 gradient with stripes and edges. */
+export function paint(buf, out32, lut, phase, density, interior, mode = 0) {
   const { iter, alpha, level } = buf;
   const n = iter.length;
   const ph = (phase - Math.floor(phase)) * LUT_SIZE;
   const dens = (buf.source === 1 ? 0.18 + density * 6 : density) * LUT_SIZE;
   const mask = LUT_SIZE - 1;
-  if (banded && buf.source !== 1) {
+  if (mode === 0 && buf.source !== 1) {
     for (let i = 0; i < n; i += 1) {
       if (alpha[i] === 0) out32[i] = interior;
       else out32[i] = lut[((Math.floor(iter[i]) * dens + ph) | 0) & mask];
+    }
+    return;
+  }
+  if (mode === 1 && buf.source !== 1) {
+    for (let i = 0; i < n; i += 1) {
+      if (alpha[i] === 0) out32[i] = interior;
+      else out32[i] = lut[((iter[i] * dens + ph) | 0) & mask];
     }
     return;
   }

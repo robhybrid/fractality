@@ -1,5 +1,5 @@
 import { BUDGET } from "../budget.js";
-import { FRACTALS, MODES, PALETTES, PRESETS, cloneStops } from "../data.js";
+import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, cloneStops } from "../data.js";
 import { BeatListener } from "./audio.js";
 import { clamp, cssGradient, fitSize, randomPalette, rasterize, shiftHue, smoothDamp } from "./color.js";
 import { Presenter, orbitCamera } from "./presenter.js";
@@ -44,7 +44,7 @@ class Engine {
     this.exposure = 1.12;
     this.edge = 0.55;
     this.post = 1;
-    this.banded = true;
+    this.colorMode = 0;
     this.colorInterior = false;
     this.autoIter = true;
     this.iterBias = 48;
@@ -533,7 +533,7 @@ class Engine {
         palMix: this.palMix,
         colorInterior: this.colorInterior,
         post: this.post,
-        banded: this.banded,
+        colorMode: this.colorMode,
         capture: this.capture,
       });
       this.error = "";
@@ -628,7 +628,8 @@ class Engine {
       audioOn: this.audio.active,
       colorInterior: this.colorInterior,
       post: this.post,
-      banded: this.banded,
+      colorMode: this.colorMode,
+      colorModes: COLOR_MODES,
       detail: this.detail,
       paused: this.paused,
       stops: this.stops,
@@ -723,7 +724,7 @@ class Engine {
       this.colorInterior = !this.colorInterior;
       this.publish(true);
     } else if (key === "`" || key === "~") {
-      this.setBanded(!this.banded);
+      this.setColorMode(this.colorMode + (event.shiftKey ? -1 : 1));
     } else if (key === "w" || key === "W") {
       this.post = (this.post + 1) % 3;
       this.publish(true);
@@ -817,8 +818,8 @@ class Engine {
     this.publish(true);
   }
 
-  setBanded(value) {
-    this.banded = value;
+  setColorMode(value) {
+    this.colorMode = (value + COLOR_MODES.length) % COLOR_MODES.length;
     this.publish(true);
   }
 

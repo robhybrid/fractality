@@ -359,11 +359,11 @@ export class Presenter {
     const phase = state.phase || 0;
     const shown = this.shown;
     const phaseStep = Math.floor((phase - Math.floor(phase)) * 1024);
-    const key = `${shown.serial}:${lutKey}:${phaseStep}:${q(state.density, 5)}:${state.colorInterior ? 1 : 0}:${state.banded ? 1 : 0}`;
+    const key = `${shown.serial}:${lutKey}:${phaseStep}:${q(state.density, 5)}:${state.colorInterior ? 1 : 0}:${state.colorMode | 0}`;
     if (key === this.paintKey) return;
     this.paintKey = key;
     const interior = interiorColor(this.lutPal, phase, state.colorInterior, gain);
-    paint(shown.buf, this.out32, this.lut, phase, state.density ?? 0.045, interior, !!state.banded);
+    paint(shown.buf, this.out32, this.lut, phase, state.density ?? 0.045, interior, state.colorMode | 0);
     this.sctx.putImageData(this.image, 0, 0);
   }
 

@@ -123,6 +123,16 @@ export function Controls({ snap, engine }) {
       <Slider label="Extra" min={-2} max={2} step={0.01} value={snap.extra} onChange={(v) => engine.setExtra(v)} />
       <Slider label="Detail" min={0.45} max={1} step={0.01} value={snap.detail} onChange={(v) => engine.setDetail(v)} />
 
+      <label className="field">
+        Gradient mode <kbd>`</kbd>
+        <select value={snap.colorMode} onChange={(event) => engine.setColorMode(Number(event.target.value))}>
+          {(snap.colorModes || []).map((item, index) => (
+            <option key={item.id} value={index}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <div className="chips">
         {snap.palettes.map((item) => (
           <button key={item.name} type="button" className={item.index === snap.paletteIndex ? "on" : ""} onClick={() => engine.setPalette(item.index)}>
@@ -177,9 +187,6 @@ export function Controls({ snap, engine }) {
         <button type="button" className={snap.breathe ? "on" : ""} onClick={() => engine.setBreathe(!snap.breathe)}>
           Y power breathe
         </button>
-        <button type="button" className={snap.banded ? "on" : ""} onClick={() => engine.setBanded(!snap.banded)}>
-          ` {snap.banded ? "solid bands" : "smooth gradient"}
-        </button>
         <button type="button" className={snap.colorInterior ? "on" : ""} onClick={() => engine.setColorInterior(!snap.colorInterior)}>
           D color the lake
         </button>
@@ -218,7 +225,7 @@ export function Controls({ snap, engine }) {
           <li><kbd>F</kbd> fullscreen</li>
           <li><kbd>S</kbd> save png</li>
           <li><kbd>\</kbd> random gradient</li>
-          <li><kbd>`</kbd> bands or smooth</li>
+          <li><kbd>`</kbd> cycle gradient mode</li>
           <li><kbd>shift</kbd> arrows edit stops</li>
         </ul>
       </details>
