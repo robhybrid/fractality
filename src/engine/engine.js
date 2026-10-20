@@ -2,7 +2,7 @@ import { BUDGET } from "../budget.js";
 import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, cloneStops } from "../data.js";
 import { BeatListener } from "./audio.js";
 import { clamp, cssGradient, fitSize, randomPalette, rasterize, shiftHue, smoothDamp } from "./color.js";
-import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, pickChild } from "./frames.js";
+import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, renormStep } from "./frames.js";
 import { Presenter, orbitCamera } from "./presenter.js";
 
 const HOTKEY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9 };
@@ -316,7 +316,7 @@ class Engine {
     this.logR = Math.log(clamp(this.radius * factor, this.minRadius(), BUDGET.maxRadius));
     this.radius = Math.exp(this.logR);
     if (this.fractal.frame && factor < 1) {
-      const anchor = anchorPoint(this.fractal.frame, this.cx, this.cy);
+      const anchor = anchorPoint(this.frameData, this.cx, this.cy);
       if (anchor) {
         const pull = Math.min(1, (1 - factor) * 2.5);
         this.cx += (anchor[0] - this.cx) * pull;
@@ -440,8 +440,8 @@ class Engine {
     const map = (x, y) => [(x - ox) * S, (y - oy) * S];
     [this.cx, this.cy] = map(this.cx, this.cy);
     [this.tcx, this.tcy] = map(this.tcx, this.tcy);
-    this.radius *= S;
     this.logR += Math.log(S);
+    this.radius = Math.exp(this.logR);
     this.tLogR += Math.log(S);
     this.vCx *= S;
     this.vCy *= S;
@@ -451,20 +451,15 @@ class Engine {
   renormalize() {
     const kind = this.fractal.frame;
     if (!kind) return;
-    const spec = frameSpec(kind);
+    const { w, h } = this.screenSize();
+    const corner = Math.hypot(1, w / h);
     let changed = false;
-    for (let guard = 0; guard < 8; guard += 1) {
-      if (this.radius < spec.down) {
-        const child = pickChild(kind, this.cx, this.cy);
-        if (!child) break;
-        this.frameDigits.push(child.digit);
-        this.reframe(spec.scale, child.ox, child.oy);
-        changed = true;
-      } else if (this.radius > spec.up && this.frameDigits.length) {
-        const [ox, oy] = childOffset(kind, this.frameDigits.pop());
-        this.reframe(1 / spec.scale, -ox * spec.scale, -oy * spec.scale);
-        changed = true;
-      } else break;
+    for (let guard = 0; guard < 2048; guard += 1) {
+      const step = renormStep(kind, this.frameDigits, this.cx, this.cy, this.radius * corner);
+      if (!step) break;
+      this.frameDigits = step.digits;
+      this.reframe(step.S, step.ox, step.oy);
+      changed = true;
     }
     if (changed) this.refreshFrame();
   }

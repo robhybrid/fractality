@@ -1,3 +1,5 @@
+import { frameInfo, GASKET, REACH, SPAN } from "./frames.js";
+
 const C1 = [0, 0, 0];
 const C2 = [0, 0, 0];
 const C3 = [0, 0, 0];
@@ -414,16 +416,21 @@ function levelsFor(state, base) {
 }
 
 function fillShape(buf, state, y0, y1) {
-  const p = planeOf(state);
   const formula = state.formula | 0;
-  const frame = state.frame || null;
+  buf.source = 0;
+  if (formula === 12) {
+    fillSierpinski(buf, state, y0, y1);
+    return;
+  }
+  if (formula === 13) {
+    fillCarpet(buf, state, y0, y1);
+    return;
+  }
+  const p = planeOf(state);
   let n;
-  if (formula === 12) n = Math.max(4, Math.min(60, Math.ceil(levelsFor(state, 2)) + 3));
-  else if (formula === 13) n = Math.max(3, Math.min(36, Math.ceil(levelsFor(state, 3)) + 2));
-  else if (formula === 16) n = Math.max(3, Math.min(40, Math.ceil(levelsFor(state, 2)) + 3));
+  if (formula === 16) n = Math.max(3, Math.min(40, Math.ceil(levelsFor(state, 2)) + 3));
   else n = Math.max(3, Math.min(30, Math.ceil(levelsFor(state, 3) + Math.log(2) / Math.log(3)) + 2));
   const w = buf.w;
-  buf.source = 0;
   for (let y = y0; y < y1; y += 1) {
     const row = rowStart(p, y);
     let wx = row.wx;
@@ -431,9 +438,7 @@ function fillShape(buf, state, y0, y1) {
     const o = (y - buf.y0) * w;
     for (let x = 0; x < w; x += 1) {
       const idx = o + x;
-      if (formula === 12) sierpinski(buf, idx, wx, wy, n, frame);
-      else if (formula === 13) carpet(buf, idx, wx, wy, n, frame);
-      else if (formula === 14) koch(buf, idx, wx, wy, n, false);
+      if (formula === 14) koch(buf, idx, wx, wy, n, false);
       else if (formula === 15) koch(buf, idx, wx, wy, n, true);
       else kaleido(buf, idx, wx, wy, n, state.extra || 0);
       wx += row.dwx;
@@ -444,104 +449,174 @@ function fillShape(buf, state, y0, y1) {
 
 const SH = 0.8660254037844386;
 const LEVEL_TONE = 3;
+const ROOT_TRI = frameInfo("tri", []);
+const ROOT_SQUARE = frameInfo("square", []);
 
-function inTri(x, y) {
-  const gz = y / SH;
-  const gy = x - 0.5 * gz;
-  return gz >= 0 && gy >= 0 && 1 - gy - gz >= 0;
+function frameOf(state, kind, root) {
+  const f = state.frame;
+  return f && f.kind === kind ? f : root;
 }
 
-/** Holes take one color per depth. What is left after n levels is the dark lace. */
-function sierIter(buf, idx, x, y, n, base) {
-  let gz = y / SH;
-  let gy = x - 0.5 * gz;
-  let gx = 1 - gy - gz;
-  for (let i = 0; i < n; i += 1) {
-    if (gx < 0.5 && gy < 0.5 && gz < 0.5) {
-      paintEscape(buf, idx, true, (base + i) * LEVEL_TONE, 0);
-      return;
-    }
-    gx = gx >= 0.5 ? gx * 2 - 1 : gx * 2;
-    gy = gy >= 0.5 ? gy * 2 - 1 : gy * 2;
-    gz = gz >= 0.5 ? gz * 2 - 1 : gz * 2;
-  }
-  paintEscape(buf, idx, false, 0, 0);
-}
+const TRI_BITS = 28;
+const TRI_GUARD = 8;
 
-function sierpinski(buf, idx, px, py, n, frame) {
-  if (inTri(px, py)) {
-    sierIter(buf, idx, px, py, n, frame?.depth || 0);
-    return;
-  }
-  if (frame && frame.depth > 0) {
-    for (let j = 0; j < 3; j += 1) {
-      const off = frame.offsets[j];
-      if (off && inTri(px - off[0], py - off[1])) {
-        sierIter(buf, idx, px - off[0], py - off[1], n, frame.depth);
-        return;
+/**
+ * The view is local to the frame cell, which is about the size of the screen.
+ * Pixels are snapped to a fixed-point lattice `n` levels (plus guard bits)
+ * finer than the frame, so each one costs a table lookup for its cell and a
+ * carry test inside it: the highest carry of lu + lv names the first hole
+ * level, and no carry above the guard bits means the pixel is still on the
+ * gasket after n levels, drawn as dark lace. 5 * 2^TRI_BITS must fit in int32.
+ */
+function fillSierpinski(buf, state, y0, y1) {
+  const p = planeOf(state);
+  const frame = frameOf(state, "tri", ROOT_TRI);
+  const cells = frame.cells;
+  const n = Math.max(4, Math.min(TRI_BITS - TRI_GUARD, Math.ceil(levelsFor(state, 2)) + 3));
+  const bits = n + TRI_GUARD;
+  const M = 2 ** bits;
+  const mask = M - 1;
+  const lim = SPAN * M;
+  const gasketTone = (frame.depth + n - 32) * LEVEL_TONE;
+  const [rx, ry, rs] = frame.root;
+  const { w, iter, extra, alpha } = buf;
+  for (let y = y0; y < y1; y += 1) {
+    const row = rowStart(p, y);
+    let U = (row.wx - (0.5 / SH) * row.wy + REACH) * M;
+    let V = (row.wy / SH + REACH) * M;
+    const dU = (row.dwx - (0.5 / SH) * row.dwy) * M;
+    const dV = (row.dwy / SH) * M;
+    const o = (y - buf.y0) * w;
+    for (let x = 0; x < w; x += 1, U += dU, V += dV) {
+      const idx = o + x;
+      if (U >= 0 && V >= 0 && U < lim && V < lim) {
+        const ui = U | 0;
+        const vi = V | 0;
+        const lu = ui & mask;
+        const lv = vi & mask;
+        const s = lu + lv;
+        const cell = cells[(((ui >> bits) * SPAN + (vi >> bits)) << 1) | (s >> bits)];
+        if (cell === GASKET) {
+          const carry = (s ^ lu ^ lv) >> TRI_GUARD;
+          if (carry === 0) {
+            iter[idx] = 0;
+            extra[idx] = 0;
+            alpha[idx] = 0;
+          } else {
+            iter[idx] = gasketTone + Math.clz32(carry) * LEVEL_TONE;
+            extra[idx] = 0;
+            alpha[idx] = 1;
+          }
+          continue;
+        }
+        if (cell >= 0) {
+          iter[idx] = cell * LEVEL_TONE;
+          extra[idx] = 0;
+          alpha[idx] = 1;
+          continue;
+        }
       }
+      const lx = (U / M - REACH) + (V / M - REACH) * 0.5;
+      const ly = (V / M - REACH) * SH;
+      const gz = (ry + ly * rs) / SH;
+      const gy = rx + lx * rs - 0.5 * gz;
+      const gx = 1 - gy - gz;
+      const g = gx < gy ? (gx < gz ? gx : gz) : gy < gz ? gy : gz;
+      iter[idx] = g >= 0 ? 0 : g < -40 / 22 ? 40 : -g * 22;
+      extra[idx] = 0.15;
+      alpha[idx] = 1;
     }
-    let x = px;
-    let y = py;
-    for (let u = 0; u < frame.up.length; u += 1) {
-      const k = frame.up[u];
-      x = x * 0.5 + (k === 1 ? 0.5 : k === 2 ? 0.25 : 0);
-      y = y * 0.5 + (k === 2 ? SH * 0.5 : 0);
-      if (inTri(x, y)) {
-        sierIter(buf, idx, x, y, n + u + 1, frame.depth - u - 1);
-        return;
+  }
+}
+
+const ONES_DIGITS = 11;
+const ONES_SPAN = 3 ** ONES_DIGITS;
+let ones = null;
+
+/** For every 11-digit base-3 number, a bit mask of the digits that are 1. */
+function onesTable() {
+  if (ones) return ones;
+  ones = new Uint16Array(ONES_SPAN);
+  for (let i = 0; i < ONES_SPAN; i += 1) {
+    let m = 0;
+    for (let j = 0, d = i; j < ONES_DIGITS; j += 1, d = (d / 3) | 0) {
+      if (d % 3 === 1) m |= 1 << j;
+    }
+    ones[i] = m;
+  }
+  return ones;
+}
+
+/**
+ * Same as the triangle, in base 3: a pixel sits in a hole where a digit of
+ * both coordinates is 1, so the hole level is the highest bit of
+ * ones[lu] & ones[lv]. Up to 22 digits split into two table lookups.
+ */
+function fillCarpet(buf, state, y0, y1) {
+  const p = planeOf(state);
+  const frame = frameOf(state, "square", ROOT_SQUARE);
+  const cells = frame.cells;
+  const t = onesTable();
+  const n = Math.max(3, Math.min(18, Math.ceil(levelsFor(state, 3)) + 2));
+  const split = n > ONES_DIGITS;
+  const M = 3 ** n;
+  const lim = SPAN * M;
+  const tone0 = (frame.depth + n - 32) * LEVEL_TONE;
+  const [rx, ry, rs] = frame.root;
+  const { w, iter, extra, alpha } = buf;
+  for (let y = y0; y < y1; y += 1) {
+    const row = rowStart(p, y);
+    let U = (row.wx + REACH) * M;
+    let V = (row.wy + REACH) * M;
+    const dU = row.dwx * M;
+    const dV = row.dwy * M;
+    const o = (y - buf.y0) * w;
+    for (let x = 0; x < w; x += 1, U += dU, V += dV) {
+      const idx = o + x;
+      if (U >= 0 && V >= 0 && U < lim && V < lim) {
+        const ui = U | 0;
+        const vi = V | 0;
+        const a = (ui / M) | 0;
+        const b = (vi / M) | 0;
+        const cell = cells[a * SPAN + b];
+        if (cell === GASKET) {
+          const lu = ui - a * M;
+          const lv = vi - b * M;
+          let m;
+          if (split) {
+            const hu = (lu / ONES_SPAN) | 0;
+            const hv = (lv / ONES_SPAN) | 0;
+            m = ((t[hu] & t[hv]) << ONES_DIGITS) | (t[lu - hu * ONES_SPAN] & t[lv - hv * ONES_SPAN]);
+          } else {
+            m = t[lu] & t[lv];
+          }
+          if (m === 0) {
+            iter[idx] = 0;
+            extra[idx] = 0;
+            alpha[idx] = 0;
+          } else {
+            iter[idx] = tone0 + Math.clz32(m) * LEVEL_TONE;
+            extra[idx] = 0;
+            alpha[idx] = 1;
+          }
+          continue;
+        }
+        if (cell >= 0) {
+          iter[idx] = cell * LEVEL_TONE;
+          extra[idx] = 0;
+          alpha[idx] = 1;
+          continue;
+        }
       }
+      const px = rx + (U / M - REACH) * rs;
+      const py = ry + (V / M - REACH) * rs;
+      const ex = px < 0 ? -px : px > 1 ? px - 1 : 0;
+      const ey = py < 0 ? -py : py > 1 ? py - 1 : 0;
+      iter[idx] = Math.sqrt(ex * ex + ey * ey) * 36;
+      extra[idx] = 0.1;
+      alpha[idx] = 1;
     }
-    paintEscape(buf, idx, true, 0, 0);
-    return;
   }
-  const gz = py / SH;
-  const gy = px - 0.5 * gz;
-  const gx = 1 - gy - gz;
-  paintEscape(buf, idx, true, Math.max(0, Math.min(40, -Math.min(gx, gy, gz) * 22)), 0.15);
-}
-
-function carpIter(buf, idx, x, y, n, base) {
-  for (let i = 0; i < n; i += 1) {
-    x *= 3;
-    y *= 3;
-    let a = Math.floor(x);
-    let b = Math.floor(y);
-    if (a > 2) a = 2;
-    if (b > 2) b = 2;
-    if (a < 0) a = 0;
-    if (b < 0) b = 0;
-    if (a === 1 && b === 1) {
-      paintEscape(buf, idx, true, (base + i) * LEVEL_TONE, 0);
-      return;
-    }
-    x -= a;
-    y -= b;
-  }
-  paintEscape(buf, idx, false, 0, 0);
-}
-
-function carpet(buf, idx, px, py, n, frame) {
-  if (px >= 0 && py >= 0 && px < 1 && py < 1) {
-    carpIter(buf, idx, px, py, n, frame?.depth || 0);
-    return;
-  }
-  const dx = Math.floor(px);
-  const dy = Math.floor(py);
-  if (frame && frame.depth > 0 && Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
-    const [status, level] = frame.nb[(dx + 1) * 3 + (dy + 1)];
-    if (status === 2) carpIter(buf, idx, px - dx, py - dy, n, frame.depth);
-    else if (status === 1) paintEscape(buf, idx, true, level * LEVEL_TONE, 0);
-    else paintEscape(buf, idx, true, 0, 0);
-    return;
-  }
-  if (frame && frame.depth > 0) {
-    paintEscape(buf, idx, true, 0, 0);
-    return;
-  }
-  const qx = Math.min(1, Math.max(0, px));
-  const qy = Math.min(1, Math.max(0, py));
-  paintEscape(buf, idx, true, Math.hypot(px - qx, py - qy) * 36, 0.1);
 }
 
 function fold(x, y, ang) {
