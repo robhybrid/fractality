@@ -58,7 +58,7 @@ export function Controls({ snap, engine }) {
       </header>
       <p className="coords">
         {snap.family === "ray"
-          ? `yaw ${snap.yaw.toFixed(2)} · pitch ${snap.pitch.toFixed(2)} · dist ${snap.dist.toFixed(2)}`
+          ? `yaw ${snap.yaw.toFixed(2)} · pitch ${snap.pitch.toFixed(2)} · gap ${snap.gap.toExponential(2)}`
           : snap.frameDepth
             ? `depth ${snap.frameDepth} · zoom ${zoomText(snap.zoomLog10)}`
             : `${snap.cx.toFixed(5)}  ${snap.cy >= 0 ? "+" : "−"} ${Math.abs(snap.cy).toFixed(5)}i · r ${snap.radius.toExponential(2)}`}
