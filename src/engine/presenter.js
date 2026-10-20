@@ -120,6 +120,7 @@ export class Presenter {
     this.gen = 0;
     this.lastJobSig = "";
     this.motionShare = 0.3;
+    this.deepShare = 0.1;
     this.gpu = null;
     this.gpuState = "idle";
     this.dead = false;
@@ -171,7 +172,7 @@ export class Presenter {
     if (state.family === "ray") cap = BUDGET.maxPixels3d;
     else if (state.family === "ifs") cap = BUDGET.maxPixelsIfs;
     const full = Math.min(W * H, cap) * quality;
-    const area = state.soft ? full * this.motionShare : full;
+    const area = state.soft ? full * (state.deep ? this.deepShare : this.motionShare) : full;
     return fitSize(W, H, Math.max(64 * 36, area));
   }
 
@@ -207,6 +208,7 @@ export class Presenter {
   startJob(job) {
     this.job = job;
     this.lastJobSig = job.sig;
+    if (job.state.deep) this.pruneOrbits(job);
     const { w, h } = job.buf;
     if (this.gpuEligible(job.state, h)) {
       try {
@@ -240,6 +242,7 @@ export class Presenter {
   dispatch(worker, job) {
     const [y0, y1] = job.chunks[job.next];
     job.next += 1;
+    if (job.state.deep) this.sendOrbits(worker, job.state.deep);
     worker.postMessage({ gen: job.gen, y0, y1, state: job.state });
   }
 
@@ -278,7 +281,9 @@ export class Presenter {
   finish(job) {
     if (this.job !== job) return;
     const ms = performance.now() - job.started;
-    if (job.soft) {
+    if (job.soft && job.state.deep) {
+      this.deepShare = Math.max(0.01, Math.min(0.5, this.deepShare * Math.max(0.5, Math.min(1.15, 60 / Math.max(1, ms)))));
+    } else if (job.soft) {
       if (ms > 48) this.motionShare = Math.max(0.05, this.motionShare * 0.8);
       else if (ms < 24) this.motionShare = Math.min(1, this.motionShare * 1.12);
     }
@@ -289,14 +294,7 @@ export class Presenter {
 
   /** Adds the reference orbit to a deep state, or returns null until one is ready. */
   deepState(input) {
-    if (!this.deepRef) {
-      this.deepRef = new DeepReference((job, msg) => {
-        for (const worker of this.workers) {
-          worker.postMessage({ orbit: { id: job.id, Z: msg.Z, N: msg.N } });
-          if (job.critId) worker.postMessage({ orbit: { id: job.critId, Z: msg.C, N: msg.CN } });
-        }
-      });
-    }
+    if (!this.deepRef) this.deepRef = new DeepReference();
     const desc = this.deepRef.prepare(input);
     return desc ? { ...input, deep: { ...desc, key: input.deep.key } } : null;
   }
@@ -308,7 +306,9 @@ export class Presenter {
     let best = -1;
     let bestD = Infinity;
     let bestI = (h >> 1) * w + (w >> 1);
-    const counts = [];
+    const bins = new Uint32Array(1024);
+    const binScale = 1023 / Math.max(1, state.iters);
+    let escapes = 0;
     let unresolved = 0;
     for (let i = 0; i < iter.length; i += 1) {
       if (!alpha[i] && buf.extra[i] > 0.5) unresolved += 1;
@@ -321,9 +321,19 @@ export class Presenter {
           bestI = i;
         }
       }
-      if (alpha[i] && (i & 7) === 0) counts.push(iter[i]);
+      if (alpha[i]) {
+        bins[Math.min(1023, (iter[i] * binScale) | 0)] += 1;
+        escapes += 1;
+      }
     }
-    counts.sort((a, b) => a - b);
+    let escHi = 0;
+    for (let b = 0, seen = 0; b < 1024 && escapes; b += 1) {
+      seen += bins[b];
+      if (seen >= escapes * 0.998) {
+        escHi = (b + 1) / binScale;
+        break;
+      }
+    }
     const nx = (((bestI % w) + 0.5) / w) * 2 - 1;
     const ny = 1 - ((Math.floor(bestI / w) + 0.5) / h) * 2;
     const px = nx * (w / h) * state.radius;
@@ -334,7 +344,7 @@ export class Presenter {
     this.deepInfo = {
       serial: (this.deepInfo?.serial || 0) + 1,
       iters: state.iters,
-      escHi: counts.length ? counts[Math.floor(counts.length * 0.998)] : 0,
+      escHi,
       unresolved: unresolved / iter.length,
       ms: Math.round(ms),
       w,
@@ -343,6 +353,27 @@ export class Presenter {
       orbitN: this.deepRef.current?.N || 0,
       orbitMs: Math.round(this.deepRef.current?.ms || 0),
     };
+  }
+
+  /** Workers get an orbit just before their first chunk that needs it. */
+  sendOrbits(worker, deep) {
+    worker.orbits ||= new Set();
+    for (const id of [deep.id, deep.critId]) {
+      if (!id || worker.orbits.has(id)) continue;
+      const orbit = this.deepRef.orbit(id);
+      worker.postMessage({ orbit: { id, Z: orbit.Z, N: orbit.N } });
+      worker.orbits.add(id);
+    }
+  }
+
+  pruneOrbits(job) {
+    const keep = new Set([job.state.deep.id, job.state.deep.critId]);
+    for (const id of this.deepRef.prune(keep)) {
+      for (const worker of this.workers) {
+        if (!worker.orbits?.delete(id)) continue;
+        worker.postMessage({ drop: id });
+      }
+    }
   }
 
   shiftOrigin(dx, dy) {
@@ -405,7 +436,12 @@ export class Presenter {
       this.gen += 1;
       this.lastJobSig = "";
     }
-    const [w, h] = this.targetSize(state, W, H);
+    let [w, h] = this.targetSize(state, W, H);
+    if (state.deep && !state.soft && !this.job && this.shown) {
+      // Deep frames take seconds: refine in steps instead of jumping from the motion size.
+      const step = this.shown.buf.w * this.shown.buf.h * 6;
+      if (step * 3 < w * h) [w, h] = fitSize(w, h, step);
+    }
     const sig = `${paramKey(state)}|${geomKey(state)}|${w}x${h}`;
     if (!this.job && sig !== this.lastJobSig) this.startJob(this.makeJob(state, w, h, sig));
     if (this.job?.kind === "main") this.stepMain(this.job);

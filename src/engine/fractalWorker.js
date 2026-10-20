@@ -1,10 +1,14 @@
-import { putOrbit } from "./deep.js";
+import { dropOrbit, putOrbit } from "./deep.js";
 import { createBuffer, fillRows, shadeLevels } from "./kernel.js";
 
 self.onmessage = (event) => {
   if (event.data.orbit) {
     const { id, Z, N } = event.data.orbit;
     putOrbit(id, Z, N);
+    return;
+  }
+  if (event.data.drop) {
+    dropOrbit(event.data.drop);
     return;
   }
   const { gen, y0, y1, state } = event.data;

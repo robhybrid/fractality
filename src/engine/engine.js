@@ -530,7 +530,8 @@ class Engine {
     this.anchor = null;
     this.deepFloor = 0;
     if (this.deepCapable() && radius < DEEP_ON) {
-      const bits = bitsFor(radius) + 32;
+      const digits = Math.max(String(re).length, String(im).length);
+      const bits = Math.max(bitsFor(radius) + 32, Math.ceil(digits * 3.33) + 16);
       this.anchor = { x: bigFromDecimal(re, bits), y: bigFromDecimal(im, bits), bits, key: ++this.anchorKey };
       this.cx = 0;
       this.cy = 0;

@@ -1,5 +1,5 @@
 import { BUDGET } from "../budget.js";
-import { bigDiff, bigFromDouble, putOrbit, rebits } from "./deep.js";
+import { bigDiff, bigFromDouble, dropOrbit, putOrbit, rebits } from "./deep.js";
 
 /**
  * Keeps one reference orbit for deep views, computed in its own worker so
@@ -8,8 +8,8 @@ import { bigDiff, bigFromDouble, putOrbit, rebits } from "./deep.js";
  * a replacement is fetched in the background before either runs out.
  */
 export class DeepReference {
-  constructor(onOrbit) {
-    this.onOrbit = onOrbit;
+  constructor() {
+    this.store = new Map();
     this.current = null;
     this.pending = null;
     this.seq = 0;
@@ -39,7 +39,7 @@ export class DeepReference {
       if (dist < s.radius * 1e6) desc = { id: cur.id, critId: cur.critId, ox, oy };
       refresh = cur.bits < depth + 64 || dist > 1.5 * aspect * s.radius || (!cur.escaped && cur.N <= s.iters);
       const hint = this.hint;
-      if (hint && !hint.tried && hint.key === s.deep.key && cur.N < Math.min(hint.n, s.iters) * 0.9) refresh = true;
+      if (!s.soft && hint && !hint.tried && hint.key === s.deep.key && cur.N < Math.min(hint.n, s.iters) * 0.8) refresh = true;
     }
     if (refresh) this.request(s);
     return desc;
@@ -72,9 +72,28 @@ export class DeepReference {
     this.pending = null;
     if (!job || job.id !== msg.id) return;
     putOrbit(job.id, msg.Z, msg.N);
-    if (job.critId) putOrbit(job.critId, msg.C, msg.CN);
+    this.store.set(job.id, { Z: msg.Z, N: msg.N });
+    if (job.critId) {
+      putOrbit(job.critId, msg.C, msg.CN);
+      this.store.set(job.critId, { Z: msg.C, N: msg.CN });
+    }
     this.current = { ...job, N: msg.N, escaped: msg.escaped, ms: msg.ms };
-    this.onOrbit(job, msg);
+  }
+
+  orbit(id) {
+    return this.store.get(id);
+  }
+
+  /** Forgets every orbit except the current one and those in keep; returns the dropped ids. */
+  prune(keep) {
+    const dropped = [];
+    for (const id of this.store.keys()) {
+      if (keep.has(id) || id === this.current?.id || id === this.current?.critId) continue;
+      this.store.delete(id);
+      dropOrbit(id);
+      dropped.push(id);
+    }
+    return dropped;
   }
 
   /** The slowest pixel of the last frame (n iterations), relative to the anchor named by key. */

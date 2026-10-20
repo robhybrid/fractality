@@ -199,13 +199,13 @@ export function buildBla(Z, N, dcMax, julia, eps = EPS_STILL) {
 
 const orbits = new Map();
 
+/** Orbits live until dropped; the presenter decides which ones jobs still need. */
 export function putOrbit(id, Z, N) {
   orbits.set(id, { Z, N, bla: new Map() });
-  while (orbits.size > 6) orbits.delete(orbits.keys().next().value);
 }
 
-export function hasOrbit(id) {
-  return orbits.has(id);
+export function dropOrbit(id) {
+  orbits.delete(id);
 }
 
 function blaFor(orbit, dcMax, julia, eps) {
