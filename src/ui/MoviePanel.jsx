@@ -167,7 +167,7 @@ export function MoviePanel({ movie, engine }) {
             <option value="2">2×2 everywhere</option>
           </select>
         </label>
-        <label className="field wide">
+        <label className="field">
           File
           <select value={settings.container} disabled={busy} onChange={(event) => m.setSetting("container", event.target.value)}>
             {CONTAINERS.map((item) => (

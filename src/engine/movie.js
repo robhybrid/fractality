@@ -20,9 +20,9 @@ export const QUALITIES = [
 ];
 
 export const CONTAINERS = [
-  { id: "mp4", label: "MP4 · H.264" },
-  { id: "mov", label: "QuickTime .mov · H.264" },
-  { id: "webm", label: "WebM · VP9" },
+  { id: "mp4", label: "MP4 (H.264)" },
+  { id: "mov", label: "MOV (H.264)" },
+  { id: "webm", label: "WebM (VP9)" },
 ];
 
 export const EASINGS = [

@@ -523,6 +523,7 @@ export class Presenter {
     this.job = null;
     this.gen += 1;
     this.lastJobSig = "";
+    this.aaSig = "";
     const job = this.makeJob({ ...state, soft: false, guess: "off", capture: false }, w, h, "still");
     let buf = await this.runStill(job);
     if (state.antialias !== false && this.workers.length && antialiasEligible(job.state)) {
