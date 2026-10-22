@@ -73,7 +73,7 @@ export function Controls({ snap, engine }) {
         }}
       />
       <p className="status">
-        {snap.viewW}×{snap.viewH} · {snap.iters} {snap.family === "ray" ? "steps" : "iters"}
+        {snap.viewW}×{snap.viewH} · {snap.backend === "SVG" ? "vector" : `${snap.iters} ${snap.family === "ray" ? "steps" : "iters"}`}
         {" · "}
         {snap.backend || "CPU"}
         {snap.antialiased ? " · antialiased" : ""}
@@ -112,8 +112,12 @@ export function Controls({ snap, engine }) {
           </div>
           <p className="hint">
             {snap.family === "ray"
-              ? "Hold to fly toward the surface under the cursor. Right-click backs away. Shift-drag or arrows orbit. R returns home."
-              : `${snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.`}
+              ? snap.name.includes("Julia") || snap.name.includes("Hybrid") || snap.name.includes("Quaternion")
+                ? "Hold to fly toward the surface. C or Julia mode sets the constant; Extra blends or sets the third component. Shift-drag orbits."
+                : "Hold to fly toward the surface under the cursor. Right-click backs away. Shift-drag or arrows orbit. R returns home."
+              : snap.backend === "SVG"
+                ? "Vector geometry — crisp at every zoom. Hold to zoom; structure subdivides instead of blurring."
+                : `${snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.`}
           </p>
 
           <Slider label="Power" min={-2} max={10} step={0.01} value={snap.power} onChange={(v) => engine.setPower(v)} />

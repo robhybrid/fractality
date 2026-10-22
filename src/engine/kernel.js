@@ -774,16 +774,17 @@ function fillIfs(buf, state) {
 }
 
 export const RAY_FOCAL = 1.35;
-export const RAY_ITER_CAP = [12, 18, 12, 24];
+export const RAY_ITER_CAP = [12, 18, 12, 24, 12, 16, 12];
 
 /** Radius of a sphere that holds every visible part of each 3D formula. */
 export function sceneRadius(shape, power) {
-  if (shape === 0) return 2;
+  if (shape === 0 || shape === 4 || shape === 6) return 2;
   if (shape === 1) {
     const s = Math.abs(power);
     return s > 1.15 ? Math.min(12, (2 * (s + 1)) / (s - 1)) : 12;
   }
   if (shape === 2) return 1.9;
+  if (shape === 5) return 2.8;
   return 2.6;
 }
 
@@ -796,6 +797,9 @@ function fillRay(buf, state, y0, y1) {
   const shape = state.formula | 0;
   const iters = Math.max(3, Math.min(RAY_ITER_CAP[shape] || 5, state.rayIters | 0 || 4));
   const power = state.power || 8;
+  const jx = state.juliaRe || 0;
+  const jy = state.juliaIm || 0;
+  const jz = state.extra || 0;
   buf.source = 0;
   const ex = cam.eye[0];
   const ey = cam.eye[1];
@@ -832,7 +836,7 @@ function fillRay(buf, state, y0, y1) {
       let hit = false;
       let used = 0;
       for (let i = 0; i < steps && t <= far && !hit; i += 1) {
-        const dist = mapScene(ex + dx * t, ey + dy * t, ez + dz * t, shape, power, iters);
+        const dist = mapScene(ex + dx * t, ey + dy * t, ez + dz * t, shape, power, iters, jx, jy, jz);
         const eps = Math.max(floor, t * pixel);
         glow += Math.exp((-Math.max(dist, 0) / Math.max(t, eps)) * 17) * glowGain;
         used = i;
@@ -848,14 +852,22 @@ function fillRay(buf, state, y0, y1) {
   }
 }
 
-export function mapScene(x, y, z, shape, power, iters) {
-  if (shape === 0) return mapBulb(x, y, z, power, iters);
+export function mapScene(x, y, z, shape, power, iters, jx = 0, jy = 0, jz = 0) {
+  if (shape === 0) return mapBulb(x, y, z, power, iters, x, y, z);
   if (shape === 1) return mapBox(x, y, z, power, iters);
   if (shape === 2) return mapMenger(x, y, z, iters);
+  if (shape === 3) return mapTetra(x, y, z, iters);
+  if (shape === 4) return mapBulb(x, y, z, power, iters, jx, jy, jz);
+  if (shape === 5) return mapQuat(x, y, z, iters, jx, jy, jz);
+  if (shape === 6) {
+    const t = Math.max(0, Math.min(1, jz));
+    return mapBulb(x, y, z, power, iters, x + (jx - x) * t, y + (jy - y) * t, z * (1 - t));
+  }
   return mapTetra(x, y, z, iters);
 }
 
-function mapBulb(px, py, pz, power, iters) {
+/** Mandelbulb / Juliabulb: z → z^p + c. Mandelbulb uses c = position; Juliabulb a fixed c. */
+function mapBulb(px, py, pz, power, iters, cx, cy, cz) {
   let zx = px;
   let zy = py;
   let zz = pz;
@@ -883,9 +895,9 @@ function mapBulb(px, py, pz, power, iters) {
       const r4 = r2 * r2;
       dr = r4 * r2 * r * 8 * dr + 1;
       const zr = r4 * r4;
-      zx = zr * st * cf + px;
-      zy = zr * st * sf + py;
-      zz = zr * ct + pz;
+      zx = zr * st * cf + cx;
+      zy = zr * st * sf + cy;
+      zz = zr * ct + cz;
     } else if (r > 0.0001 && r < 2) {
       const theta = Math.acos(Math.max(-1, Math.min(1, zz / r))) * p;
       const phi = Math.atan2(zy, zx) * p;
@@ -893,12 +905,37 @@ function mapBulb(px, py, pz, power, iters) {
       dr = rp * p * dr + 1;
       const zr = rp * r;
       const st = Math.sin(theta);
-      zx = zr * st * Math.cos(phi) + px;
-      zy = zr * st * Math.sin(phi) + py;
-      zz = zr * Math.cos(theta) + pz;
+      zx = zr * st * Math.cos(phi) + cx;
+      zy = zr * st * Math.sin(phi) + cy;
+      zz = zr * Math.cos(theta) + cz;
     }
   }
   return (0.5 * Math.log(Math.max(r, 1e-3)) * r) / Math.max(dr, 1e-3);
+}
+
+/** Classic quaternion Julia set q² + c, sliced at w = 0. */
+function mapQuat(px, py, pz, iters, jx, jy, jz) {
+  let x = px;
+  let y = py;
+  let z = pz;
+  let w = 0;
+  let dr = 1;
+  let r2 = 0;
+  for (let i = 0; i < iters; i += 1) {
+    r2 = x * x + y * y + z * z + w * w;
+    if (r2 > 8) break;
+    dr = 2 * Math.sqrt(r2) * dr + 1;
+    const x2 = x * x - y * y - z * z - w * w + jx;
+    const y2 = 2 * x * y + jy;
+    const z2 = 2 * x * z + jz;
+    const w2 = 2 * x * w;
+    x = x2;
+    y = y2;
+    z = z2;
+    w = w2;
+  }
+  const r = Math.sqrt(Math.max(r2, 1e-8));
+  return (0.5 * Math.log(r) * r) / Math.max(dr, 1e-3);
 }
 
 function mapBox(px, py, pz, scale, iters) {

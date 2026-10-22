@@ -14,12 +14,24 @@
 html, body, #root, .app { height: 100%; margin: 0; }
 body { background: #07080c; overflow: hidden; }
 canvas {
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100%;
   display: block;
   cursor: crosshair;
   touch-action: none;
   outline: none;
+  z-index: 0;
+}
+.vector-layer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  pointer-events: none;
+  z-index: 0;
 }
 .vignette {
   position: fixed;

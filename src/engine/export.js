@@ -1,4 +1,5 @@
 import { RESOLUTIONS, bitrateFor, samplePose } from "./movie.js";
+import { isVectorShape, rasterizeVector } from "./vector.js";
 
 /** Largest supersampled frame; 2x of 1080p is ~8.3 Mpx, about 170 MB of buffers. */
 const MAX_SUPERSAMPLED = 3840 * 2160;
@@ -150,7 +151,9 @@ export async function runExport(movie) {
       const W = w * ss;
       const H = h * ss;
       const state = engine.renderState(false, { w: W, h: H });
-      const image = await renderer.renderStill(state, W, H);
+      const image = isVectorShape(engine.fractal)
+        ? await rasterizeVector({ ...state, cssW: W, cssH: H }, engine.stops, document.createElement("canvas"))
+        : await renderer.renderStill(state, W, H);
       if (ss === 1) ctx.putImageData(image, 0, 0);
       else {
         if (big.width !== W || big.height !== H) {

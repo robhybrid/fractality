@@ -525,8 +525,8 @@ export class Presenter {
     this.colorize(state);
     const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "medium";
+    ctx.imageSmoothingEnabled = !!state.soft;
+    ctx.imageSmoothingQuality = state.soft ? "low" : "high";
     if (!m || (m[1] === 0 && m[2] === 0 && m[4] === 0 && m[5] === 0 && Math.abs(m[0] * this.shown.buf.w - W) < 0.5 && Math.abs(m[3] * this.shown.buf.h - H) < 0.5)) {
       ctx.drawImage(this.scratch, 0, 0, W, H);
       return;

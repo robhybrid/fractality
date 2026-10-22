@@ -6,6 +6,7 @@ import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, renormStep } 
 import { angles, baseGap, basis, clampPitch, lookCamera, march, probe, orbitEye, pivotDistance, pixelRay, rayDetail, wrapAngle } from "./flight.js";
 import { MovieMaker } from "./movie.js";
 import { Presenter } from "./presenter.js";
+import { clearVector, isVectorShape, paintVector, rasterizeVector } from "./vector.js";
 
 const HOTKEY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9 };
 
@@ -110,6 +111,11 @@ class Engine {
     window.addEventListener("resize", this.onResize);
     this.resizeObserver = new ResizeObserver(this.onResize);
     this.resizeObserver.observe(canvas);
+    this.svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    this.svg.classList.add("vector-layer");
+    this.svg.setAttribute("aria-hidden", "true");
+    canvas.parentElement?.appendChild(this.svg);
+    clearVector(this.svg);
   }
 
   get fractal() {
@@ -143,6 +149,7 @@ class Engine {
     this.resizeObserver.disconnect();
     this.audio.stop();
     this.renderer.destroy();
+    this.svg?.remove();
   }
 
   applyHome(fractal, snapPower = true) {
@@ -380,14 +387,19 @@ class Engine {
     this.vYaw = this.vPitch = 0;
   }
 
+  julia3() {
+    return [this.juliaRe || 0, this.juliaIm || 0, this.extra || 0];
+  }
+
   flightGap(eye = this.eye) {
     const f = this.fractal;
-    const key = `${f.id}:${Math.round(this.power * 1000)}`;
+    const [jx, jy, jz] = this.julia3();
+    const key = `${f.id}:${Math.round(this.power * 1000)}:${Math.round(jx * 1e4)}:${Math.round(jy * 1e4)}:${Math.round(jz * 1e4)}`;
     if (this.homeKey !== key) {
       this.homeKey = key;
-      this.homeGap = baseGap(orbitEye(f.home.yaw, f.home.pitch, f.home.dist), f.formula, this.power);
+      this.homeGap = baseGap(orbitEye(f.home.yaw, f.home.pitch, f.home.dist), f.formula, this.power, jx, jy, jz);
     }
-    const found = probe(eye, f.formula, this.power, this.homeGap, this.gapIters);
+    const found = probe(eye, f.formula, this.power, this.homeGap, this.gapIters, jx, jy, jz);
     if (eye === this.eye) this.gapIters = found.iters;
     return found.gap;
   }
@@ -405,7 +417,8 @@ class Engine {
       if (!lock || lock.iters !== this.gapIters || Math.hypot(x - lock.x, y - lock.y) > 2 || (toward && reach < gap * 1.5)) {
         const ray = pixelRay(cam, (x / w) * 2 - 1, 1 - (y / h) * 2, w / h);
         const f = this.fractal;
-        const t = march(this.eye, ray, f.formula, this.power, this.gapIters);
+        const [jx, jy, jz] = this.julia3();
+        const t = march(this.eye, ray, f.formula, this.power, this.gapIters, 300, jx, jy, jz);
         lock = this.flyLock = { x, y, ray, iters: this.gapIters, point: t > 0 ? this.eye.map((v, i) => v + ray[i] * t) : null };
         toward = lock.point ? ray : null;
       }
@@ -449,7 +462,8 @@ class Engine {
   orbitPivot(eye, yaw, pitch) {
     const f = this.fractal;
     const gap = this.flightGap(eye);
-    const r = pivotDistance(eye, yaw, pitch, f.formula, this.power, gap, this.gapIters);
+    const [jx, jy, jz] = this.julia3();
+    const r = pivotDistance(eye, yaw, pitch, f.formula, this.power, gap, this.gapIters, jx, jy, jz);
     const { forward } = basis(yaw, pitch);
     return { r, point: eye.map((v, i) => v + forward[i] * r) };
   }
@@ -713,7 +727,7 @@ class Engine {
     const ray = family === "ray" ? rayDetail(this.fractal.formula, this.gap ?? this.flightGap(), this.homeGap, iterScale * (soft ? 0.7 : 1), this.gapIters) : null;
     const iters = ray ? ray.steps : this.effectiveIters(iterScale, offline ? h : 0);
     const upscale = Math.max(w / viewW, h / viewH);
-    const blur = soft ? 1.15 : upscale > 1.08 ? 0.45 : 0;
+    const blur = soft ? 0.28 : 0;
     return {
       cssW: w,
       cssH: h,
@@ -763,6 +777,11 @@ class Engine {
   }
 
   draw(soft) {
+    if (isVectorShape(this.fractal)) {
+      this.drawVector();
+      return;
+    }
+    clearVector(this.svg);
     const state = this.renderState(soft);
     const { texW, texH, viewW, viewH, iters, blur } = state;
     let pixels = null;
@@ -785,6 +804,56 @@ class Engine {
     };
     if (pixels?.pixels) this.download(pixels);
     this.capture = false;
+  }
+
+  /** Crisp SVG for Sierpinski / Koch — no bitmap blur, detail to the pixel. */
+  drawVector() {
+    const { w, h } = this.screenSize();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const bw = Math.max(1, Math.round(w * dpr));
+    const bh = Math.max(1, Math.round(h * dpr));
+    if (this.canvas.width !== bw || this.canvas.height !== bh) {
+      this.canvas.width = bw;
+      this.canvas.height = bh;
+    }
+    const ctx = this.canvas.getContext("2d");
+    if (ctx) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = "#07080c";
+      ctx.fillRect(0, 0, bw, bh);
+    }
+    const state = {
+      cssW: w,
+      cssH: h,
+      formula: this.fractal.formula,
+      cx: this.cx,
+      cy: this.cy,
+      radius: this.radius,
+      rotation: this.rotation || 0,
+      frame: this.frameData,
+      phase: this.phase,
+      density: this.density,
+      exposure: this.exposure,
+      beat: this.beatPulse,
+    };
+    try {
+      paintVector(this.svg, state, this.stops);
+      this.error = "";
+    } catch (error) {
+      this.error = error.message || String(error);
+    }
+    this.dirty = false;
+    this.view = { texW: w, texH: h, viewW: w, viewH: h, iters: this.effectiveIters(), blur: 0 };
+    if (this.capture) {
+      rasterizeVector(state, this.stops, document.createElement("canvas"))
+        .then((image) => this.download({ pixels: image.data, w: image.width, h: image.height, flip: false }))
+        .catch(() => {});
+      this.capture = false;
+    }
+    if (this.renderer.label !== "SVG") {
+      this.renderer.label = "SVG";
+      this.publish(true);
+    }
   }
 
   download({ pixels, w, h, flip = true }) {
@@ -832,7 +901,7 @@ class Engine {
       fps: Math.round(this.fps),
       throttled: this.throttled,
       backend: this.renderer.label || "CPU",
-      antialiased: !!this.renderer.shown?.buf.cover,
+      antialiased: isVectorShape(this.fractal) ? true : !!this.renderer.shown?.buf.cover,
       phase: this.phase,
       viewW: this.view.viewW || 0,
       viewH: this.view.viewH || 0,
@@ -1255,13 +1324,13 @@ class Engine {
     this.mx = event.offsetX;
     this.my = event.offsetY;
     this.alt = event.altKey;
-    if (event.button === 2 || event.altKey) this.zoomTarget = -1.15;
+    if (event.button === 2 || event.altKey) this.zoomTarget = BUDGET.zoomOut;
     else if (event.button === 1 || event.shiftKey) {
       this.drag = "pan";
       if (this.fractal.family === "ray") this.pivot = this.orbitPivot(this.eye, this.yaw, this.pitch);
     }
-    else if (this.mode === "zoom") this.zoomTarget = 1.2;
-    else if (this.mode === "zoomout") this.zoomTarget = -1.15;
+    else if (this.mode === "zoom") this.zoomTarget = BUDGET.zoomIn;
+    else if (this.mode === "zoomout") this.zoomTarget = BUDGET.zoomOut;
     else {
       this.drag = this.mode;
       if (this.mode === "julia") this.pickJulia(event);
@@ -1326,9 +1395,9 @@ class Engine {
       this.alt = false;
       return;
     }
-    if (this.buttons.has(2) || this.alt) this.zoomTarget = -1.15;
-    else if (this.buttons.has(0) && this.mode === "zoom") this.zoomTarget = 1.2;
-    else if (this.buttons.has(0) && this.mode === "zoomout") this.zoomTarget = -1.15;
+    if (this.buttons.has(2) || this.alt) this.zoomTarget = BUDGET.zoomOut;
+    else if (this.buttons.has(0) && this.mode === "zoom") this.zoomTarget = BUDGET.zoomIn;
+    else if (this.buttons.has(0) && this.mode === "zoomout") this.zoomTarget = BUDGET.zoomOut;
     else this.zoomTarget = 0;
   }
 

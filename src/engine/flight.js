@@ -10,9 +10,9 @@ import { RAY_FOCAL, RAY_ITER_CAP, mapScene, sceneRadius } from "./kernel.js";
  * through it and the same input keeps working at any depth.
  */
 
-const BASE_ITERS = [BUDGET.bulbIter, BUDGET.boxIter, BUDGET.mengerIter, BUDGET.tetraIter];
+const BASE_ITERS = [BUDGET.bulbIter, BUDGET.boxIter, BUDGET.mengerIter, BUDGET.tetraIter, BUDGET.juliabulbIter, BUDGET.quatIter, BUDGET.hybridIter];
 // Extra fractal iterations per halving of the gap to the surface, roughly log(2) / log(per-iteration scale).
-const ITER_RATE = [0.3, 0.3, 0.63, 1];
+const ITER_RATE = [0.3, 0.3, 0.63, 1, 0.3, 0.35, 0.3];
 const MAX_PITCH = 1.45;
 
 export function basis(yaw, pitch) {
@@ -66,12 +66,12 @@ export function itersAt(shape, depth) {
   return Math.min(RAY_ITER_CAP[shape] ?? base, base + Math.max(0, depth) * (ITER_RATE[shape] ?? 0.5));
 }
 
-function rawGap(eye, shape, power, iters) {
+function rawGap(eye, shape, power, iters, jx = 0, jy = 0, jz = 0) {
   const r = Math.hypot(eye[0], eye[1], eye[2]);
   const bound = sceneRadius(shape, power);
   // Far outside the bounding sphere the estimators get loose; the sphere is a safe lower bound there.
   if (r > bound * 1.5) return r - bound;
-  return mapScene(eye[0], eye[1], eye[2], shape | 0, power, Math.round(iters));
+  return mapScene(eye[0], eye[1], eye[2], shape | 0, power, Math.round(iters), jx, jy, jz);
 }
 
 /**
@@ -81,30 +81,30 @@ function rawGap(eye, shape, power, iters) {
  * time and refuses a step that would suddenly put the camera next to new
  * surface, which keeps the detail from running away on dense formulas.
  */
-export function probe(eye, shape, power, homeGap, prev = null) {
+export function probe(eye, shape, power, homeGap, prev = null, jx = 0, jy = 0, jz = 0) {
   const base = BASE_ITERS[shape] ?? 5;
   let iters = prev ?? base;
-  let gap = rawGap(eye, shape, power, iters);
+  let gap = rawGap(eye, shape, power, iters, jx, jy, jz);
   const want = itersAt(shape, depthOf(gap, homeGap));
   if (want >= iters + 0.6 && iters < (RAY_ITER_CAP[shape] ?? base)) {
-    const finer = rawGap(eye, shape, power, iters + 1);
+    const finer = rawGap(eye, shape, power, iters + 1, jx, jy, jz);
     if (finer > gap * 0.75) {
       iters += 1;
       gap = finer;
     }
   } else if (want <= iters - 0.6 && iters > base) {
     iters -= 1;
-    gap = rawGap(eye, shape, power, iters);
+    gap = rawGap(eye, shape, power, iters, jx, jy, jz);
   }
   return { gap: gap > 0 ? gap : 0, iters };
 }
 
-export function gapAt(eye, shape, power, homeGap, iters) {
-  return probe(eye, shape, power, homeGap, iters).gap;
+export function gapAt(eye, shape, power, homeGap, iters, jx = 0, jy = 0, jz = 0) {
+  return probe(eye, shape, power, homeGap, iters, jx, jy, jz).gap;
 }
 
-export function baseGap(eye, shape, power) {
-  return Math.max(1e-3, rawGap(eye, shape, power, BASE_ITERS[shape] ?? 5));
+export function baseGap(eye, shape, power, jx = 0, jy = 0, jz = 0) {
+  return Math.max(1e-3, rawGap(eye, shape, power, BASE_ITERS[shape] ?? 5, jx, jy, jz));
 }
 
 export function depthOf(gap, homeGap) {
@@ -112,7 +112,7 @@ export function depthOf(gap, homeGap) {
 }
 
 /** March one ray on the main thread; returns the hit distance or -1. */
-export function march(eye, dir, shape, power, iters, maxSteps = 300) {
+export function march(eye, dir, shape, power, iters, maxSteps = 300, jx = 0, jy = 0, jz = 0) {
   const bound = sceneRadius(shape, power);
   const b = eye[0] * dir[0] + eye[1] * dir[1] + eye[2] * dir[2];
   const c = eye[0] ** 2 + eye[1] ** 2 + eye[2] ** 2 - bound * bound;
@@ -122,7 +122,7 @@ export function march(eye, dir, shape, power, iters, maxSteps = 300) {
   if (far <= 0) return -1;
   let t = Math.max(0, -b - Math.sqrt(disc));
   for (let i = 0; i < maxSteps && t <= far; i += 1) {
-    const d = mapScene(eye[0] + dir[0] * t, eye[1] + dir[1] * t, eye[2] + dir[2] * t, shape, power, Math.round(iters));
+    const d = mapScene(eye[0] + dir[0] * t, eye[1] + dir[1] * t, eye[2] + dir[2] * t, shape, power, Math.round(iters), jx, jy, jz);
     const eps = Math.max(1e-13, t * 1e-3);
     if (d < eps) return t;
     t += Math.min(0.4, Math.max(eps * 0.5, d * 0.92));
@@ -136,10 +136,10 @@ export function march(eye, dir, shape, power, iters, maxSteps = 300) {
  * home view still spins around the middle; close in it is the surface
  * under the screen center.
  */
-export function pivotDistance(eye, yaw, pitch, shape, power, gap, iters) {
+export function pivotDistance(eye, yaw, pitch, shape, power, gap, iters, jx = 0, jy = 0, jz = 0) {
   const { forward } = basis(yaw, pitch);
   const toCenter = -(eye[0] * forward[0] + eye[1] * forward[1] + eye[2] * forward[2]);
-  const hit = march(eye, forward, shape, power, iters);
+  const hit = march(eye, forward, shape, power, iters, 300, jx, jy, jz);
   const near = hit > 0 ? hit : Math.max(gap * 2, toCenter);
   const r = Math.hypot(eye[0], eye[1], eye[2]) || 1;
   const s = Math.max(0, Math.min(1, (gap / r - 0.1) / 0.2));
