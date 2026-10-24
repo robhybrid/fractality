@@ -405,7 +405,7 @@ export class Presenter {
       post: 1,
       palMix: 0,
       colorInterior: false,
-      colorMode: 0,
+      colorMode: 1,
       beat: 0,
       iters: this.shown.state?.iters || 48,
     };

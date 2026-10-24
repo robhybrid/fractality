@@ -48,7 +48,7 @@ class Engine {
     this.exposure = 1.12;
     this.edge = 0.55;
     this.post = 1;
-    this.colorMode = 0;
+    this.colorMode = 1;
     this.colorInterior = false;
     this.deRelief = false;
     this.autoIter = true;
