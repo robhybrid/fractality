@@ -240,3 +240,29 @@ details summary { cursor: pointer; color: var(--ink); }
 .progress .bar i { display: block; height: 100%; background: var(--mint); transition: width 0.2s; }
 .hint a { color: var(--mint); }
 .hint.warn { color: var(--hot); }
+.julia { margin: 10px 0; font-size: 12px; color: var(--muted); }
+.julia > span { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.julia b { color: var(--ink); font-weight: 560; font-variant-numeric: tabular-nums; }
+.julia-pad {
+  position: relative;
+  aspect-ratio: 1;
+  max-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: radial-gradient(circle at 50% 50%, rgba(142, 231, 200, 0.12), transparent 70%), rgba(255, 255, 255, 0.03);
+  cursor: crosshair;
+  touch-action: none;
+}
+.julia-pad .axis-x, .julia-pad .axis-y { position: absolute; background: var(--line); }
+.julia-pad .axis-x { left: 0; right: 0; top: 50%; height: 1px; }
+.julia-pad .axis-y { top: 0; bottom: 0; left: 50%; width: 1px; }
+.julia-pad .dot {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: var(--mint);
+  box-shadow: 0 0 0 3px rgba(142, 231, 200, 0.25);
+  pointer-events: none;
+}

@@ -260,13 +260,179 @@ export function deepContext(state) {
     periodic: !!state.skipInterior,
     tol: px * 0.05,
     stats: deep.stats || null,
+    cont: state.keepCont ? contStore() : null,
   };
+}
+
+const RUN = { escaped: false, cycled: false, n: 0, m: 0, dx: 0, dy: 0, zx: 0, zy: 0, z2: 0, crit: false };
+
+/**
+ * Perturbation from a given state: offset (dx, dy) from Z_m after n total
+ * iterations, on the main orbit or (for Julia sets, after the first rebase)
+ * the critical orbit. Results go to RUN so the loop allocates nothing.
+ */
+function run(k, dcx, dcy, dx, dy, m, n, onCrit, maxIter) {
+  const julia = k.julia;
+  const orbit = onCrit ? k.crit : k.main;
+  let Z = orbit.Z;
+  let last = orbit.N - 1;
+  let bla = onCrit ? k.critBla : k.mainBla;
+  let L0 = bla ? bla.data[0] : null;
+  let L0n = bla ? bla.count[0] : 0;
+  const { bail, periodic, tol } = k;
+  let rebases = 0;
+  let checkpoint = 1;
+  let sx = 0;
+  let sy = 0;
+  let steps = 0;
+  let blaSteps = 0;
+  let zx = Z[2 * m] + dx;
+  let zy = Z[2 * m + 1] + dy;
+  let z2 = zx * zx + zy * zy;
+  let escaped = z2 > bail;
+  let cycled = false;
+  while (!escaped && n < maxIter) {
+    const j = m - 1;
+    const r0 = j >= 0 && j < L0n ? L0[j * STRIDE + 4] : 0;
+    let stepped = false;
+    if (dx < r0 && -dx < r0 && dy < r0 && -dy < r0) {
+      let lv = bla.data.length - 1;
+      if (j > 0) lv = Math.min(lv, 31 - Math.clz32(j & -j));
+      for (; lv >= 0; lv -= 1) {
+        const i = j >> lv;
+        if (i >= bla.count[lv]) continue;
+        const D = bla.data[lv];
+        const e = i * STRIDE;
+        const r = D[e + 4];
+        const len = 1 << lv;
+        if (dx < r && -dx < r && dy < r && -dy < r && n + len <= maxIter) {
+          const Ar = D[e];
+          const Ai = D[e + 1];
+          const Br = D[e + 2];
+          const Bi = D[e + 3];
+          const nx = Ar * dx - Ai * dy + Br * dcx - Bi * dcy;
+          dy = Ar * dy + Ai * dx + Br * dcy + Bi * dcx;
+          dx = nx;
+          m += len;
+          n += len;
+          blaSteps += 1;
+          stepped = true;
+          break;
+        }
+      }
+    }
+    if (!stepped) {
+      const tx = 2 * Z[2 * m] + dx;
+      const ty = 2 * Z[2 * m + 1] + dy;
+      const nx = tx * dx - ty * dy + dcx;
+      dy = tx * dy + ty * dx + dcy;
+      dx = nx;
+      m += 1;
+      n += 1;
+      steps += 1;
+    }
+    zx = Z[2 * m] + dx;
+    zy = Z[2 * m + 1] + dy;
+    z2 = zx * zx + zy * zy;
+    if (z2 > bail) {
+      escaped = true;
+      break;
+    }
+    const d2 = dx * dx + dy * dy;
+    if (z2 < d2 || m >= last || (z2 < 1e-280 && Math.max(Math.abs(zx), Math.abs(zy)) < Math.max(Math.abs(dx), Math.abs(dy)))) {
+      dx = zx;
+      dy = zy;
+      m = 0;
+      if (julia && !onCrit) {
+        onCrit = true;
+        Z = k.crit.Z;
+        last = k.crit.N - 1;
+        bla = k.critBla;
+        L0 = bla ? bla.data[0] : null;
+        L0n = bla ? bla.count[0] : 0;
+      }
+      rebases += 1;
+      if (periodic) {
+        if (rebases > 1 && Math.abs(zx - sx) + Math.abs(zy - sy) < tol) {
+          cycled = true;
+          break;
+        }
+        if (rebases === checkpoint) {
+          sx = zx;
+          sy = zy;
+          checkpoint *= 2;
+        }
+      }
+    }
+  }
+  if (k.stats) {
+    k.stats.steps += steps;
+    k.stats.blaSteps += blaSteps;
+    k.stats.rebases += rebases;
+  }
+  RUN.escaped = escaped;
+  RUN.cycled = cycled;
+  RUN.n = n;
+  RUN.m = m;
+  RUN.dx = dx;
+  RUN.dy = dy;
+  RUN.zx = zx;
+  RUN.zy = zy;
+  RUN.z2 = z2;
+  RUN.crit = onCrit;
+}
+
+function writeRun(buf, idx, bail) {
+  if (!RUN.escaped) {
+    buf.iter[idx] = 0;
+    buf.extra[idx] = RUN.cycled ? 0 : 1;
+    buf.alpha[idx] = 0;
+    return;
+  }
+  const logBail = Math.log(Math.sqrt(bail));
+  const logMag = 0.5 * Math.log(RUN.z2);
+  let nu = logMag > logBail ? Math.log(logMag / logBail) / Math.LN2 : 0;
+  if (!Number.isFinite(nu)) nu = 0;
+  buf.iter[idx] = RUN.n - nu;
+  buf.extra[idx] = 0.5 + 0.5 * Math.sin(Math.atan2(RUN.zy, RUN.zx) * 2);
+  buf.alpha[idx] = 1;
+}
+
+/** Saved state for pixels that ran out of iterations without a detected cycle. */
+export function contStore() {
+  return { idx: [], dx: [], dy: [], m: [], n: [], crit: [] };
+}
+
+function contPush(c, idx) {
+  c.idx.push(idx);
+  c.dx.push(RUN.dx);
+  c.dy.push(RUN.dy);
+  c.m.push(RUN.m);
+  c.n.push(RUN.n);
+  c.crit.push(RUN.crit ? 1 : 0);
+}
+
+export function contPack(c) {
+  return {
+    idx: Int32Array.from(c.idx),
+    dx: Float64Array.from(c.dx),
+    dy: Float64Array.from(c.dy),
+    m: Int32Array.from(c.m),
+    n: Int32Array.from(c.n),
+    crit: Uint8Array.from(c.crit),
+  };
+}
+
+export function contTransfer(c) {
+  return [c.idx.buffer, c.dx.buffer, c.dy.buffer, c.m.buffer, c.n.buffer, c.crit.buffer];
 }
 
 /**
  * Same output contract as the direct escape kernel: smooth count in iter,
  * alpha 0 inside. Inside pixels that ran out of iterations instead of
- * settling into a cycle get extra = 1, so the caller can raise the limit.
+ * settling into a cycle get extra = 1; with k.cont set their state is kept
+ * so a later pass can carry on from where they stopped. This loop is kept
+ * separate from run() because sharing it costs normal frames about 2x.
  */
 export function deepPixel(buf, idx, wx, wy, k) {
   const julia = k.julia;
@@ -294,6 +460,7 @@ export function deepPixel(buf, idx, wx, wy, k) {
   let sy = 0;
   let steps = 0;
   let blaSteps = 0;
+  let onCrit = false;
   let zx = Z[0] + dx;
   let zy = Z[1] + dy;
   let z2 = zx * zx + zy * zy;
@@ -349,6 +516,7 @@ export function deepPixel(buf, idx, wx, wy, k) {
       dy = zy;
       m = 0;
       if (julia) {
+        onCrit = true;
         Z = k.crit.Z;
         last = k.crit.N - 1;
         bla = k.critBla;
@@ -378,6 +546,15 @@ export function deepPixel(buf, idx, wx, wy, k) {
     buf.iter[idx] = 0;
     buf.extra[idx] = cycled ? 0 : 1;
     buf.alpha[idx] = 0;
+    if (k.cont && !cycled) {
+      const c = k.cont;
+      c.idx.push(idx + buf.y0 * buf.w);
+      c.dx.push(dx);
+      c.dy.push(dy);
+      c.m.push(m);
+      c.n.push(n);
+      c.crit.push(onCrit ? 1 : 0);
+    }
     return;
   }
   const logBail = Math.log(Math.sqrt(bail));
@@ -387,4 +564,40 @@ export function deepPixel(buf, idx, wx, wy, k) {
   buf.iter[idx] = n - nu;
   buf.extra[idx] = 0.5 + 0.5 * Math.sin(Math.atan2(zy, zx) * 2);
   buf.alpha[idx] = 1;
+}
+
+/**
+ * Carries saved pixels on to k.n total iterations. Positions come from the
+ * absolute pixel index; results are returned sparse, with the pixels that
+ * are still unresolved saved again for the next pass.
+ */
+export function deepContinue(state, k, saved, rowStart, plane) {
+  const w = state.w;
+  const count = saved.idx.length;
+  const upd = { idx: new Int32Array(count), iter: new Float32Array(count), extra: new Float32Array(count), alpha: new Uint8Array(count) };
+  const rest = contStore();
+  const one = { iter: new Float32Array(1), extra: new Float32Array(1), alpha: new Uint8Array(1) };
+  let rowY = -1;
+  let row = null;
+  for (let i = 0; i < count; i += 1) {
+    const abs = saved.idx[i];
+    const y = Math.floor(abs / w);
+    const x = abs - y * w;
+    if (y !== rowY) {
+      row = rowStart(plane, y);
+      rowY = y;
+    }
+    const wx = row.wx + x * row.dwx;
+    const wy = row.wy + x * row.dwy;
+    const dcx = k.julia ? 0 : wx + k.ox;
+    const dcy = k.julia ? 0 : wy + k.oy;
+    run(k, dcx, dcy, saved.dx[i], saved.dy[i], saved.m[i], saved.n[i], saved.crit[i] === 1, k.n);
+    writeRun(one, 0, k.bail);
+    upd.idx[i] = abs;
+    upd.iter[i] = one.iter[0];
+    upd.extra[i] = one.extra[0];
+    upd.alpha[i] = one.alpha[0];
+    if (!RUN.escaped && !RUN.cycled) contPush(rest, abs);
+  }
+  return { upd, rest: contPack(rest) };
 }

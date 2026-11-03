@@ -92,7 +92,6 @@ class Engine {
     this.anchorKey = 0;
     this.iterMul = 1;
     this.deepFloor = 0;
-    this.deepStuck = this.deepTrial = null;
     this.deepInfo = null;
     this.applyHome(FRACTALS[0], true);
     this.renderer.uploadPalette("a", rasterize(this.stops));
@@ -171,7 +170,6 @@ class Engine {
     this.frameDigits = [];
     this.anchor = null;
     this.deepFloor = 0;
-    this.deepStuck = this.deepTrial = null;
     this.refreshFrame(fractal);
     if (fractal.family === "ray") {
       this.yaw = home.yaw;
@@ -627,8 +625,7 @@ class Engine {
       const [ax, ay] = this.anchorDouble();
       this.anchor = null;
       this.deepFloor = 0;
-      this.deepStuck = this.deepTrial = null;
-      this.shiftView(-ax, -ay);
+        this.shiftView(-ax, -ay);
       const floor = Math.log(this.minRadius());
       if (this.logR < floor) {
         this.logR = floor;
@@ -679,7 +676,6 @@ class Engine {
     this.toRoot();
     this.anchor = null;
     this.deepFloor = 0;
-    this.deepStuck = this.deepTrial = null;
     if (this.deepCapable() && radius < DEEP_ON) {
       const digits = Math.max(String(re).length, String(im).length);
       const bits = Math.max(bitsFor(radius) + 32, Math.ceil(digits * 3.33) + 16);
@@ -889,6 +885,7 @@ class Engine {
       frame: this.frameData,
       frameKey: this.frameSig,
       deep: this.anchor ? { ax: this.anchor.x, ay: this.anchor.y, bits: this.anchor.bits, key: this.anchor.key } : null,
+      keepCont: !!this.anchor && this.autoIter && !soft && !offline,
       phase: this.phase,
       density: this.density,
       soft,
@@ -996,23 +993,12 @@ class Engine {
     if (info.serial === this.deepInfo?.serial) return;
     this.deepInfo = info;
     if (!this.anchor || !this.autoIter || info.iters !== iters) return;
+    // Pixels that hit the limit are carried further by continuation passes in
+    // the presenter; the base limit only follows where escapes are happening.
     const quant = (v) => 2 ** (Math.ceil(Math.log2(Math.max(1, v)) * 4) / 4);
-    // Pixels that hit the limit without a detected cycle are often just deep
-    // inside the set and never escape. Raising for them is a trial: if the
-    // last raise did not resolve a good share, stop until the view moves on.
-    const trial = this.deepTrial;
-    if (trial && iters > trial.iters && !info.soft) {
-      if (info.unresolved > trial.unresolved * 0.8) this.deepStuck = { radius: this.radius, unresolved: info.unresolved };
-      this.deepTrial = null;
-    }
-    if (this.deepStuck && (this.radius < this.deepStuck.radius * 0.25 || this.radius > this.deepStuck.radius * 4)) this.deepStuck = null;
     let want = iters;
     if (info.escHi > iters * 0.55) want = Math.min(info.escHi * 2, iters * 2);
     else if (info.escHi * 2.5 < iters * 0.6 && info.unresolved < 0.002) want = Math.max(info.escHi * 2.5, BUDGET.minIter);
-    if (info.unresolved > 0.002 && !info.soft && !this.deepStuck && want <= iters) {
-      want = iters * 1.5;
-      this.deepTrial = { iters, unresolved: info.unresolved };
-    }
     const next = Math.min(BUDGET.maxDeepIter, quant(want / (this.iterMul * this.iterScale)));
     if (Math.abs(next - this.deepFloor) > 1 && Math.abs(want - iters) > iters * 0.1) {
       this.deepFloor = next;
@@ -1066,6 +1052,8 @@ class Engine {
       throttled: this.throttled,
       backend: this.renderer.label || "CPU",
       antialiased: isVectorShape(this.fractal) ? true : !!this.renderer.shown?.buf.cover,
+      contIters: this.anchor ? this.renderer.shown?.contIters || 0 : 0,
+      contDone: !!this.renderer.shown?.contDone,
       phase: this.phase,
       viewW: this.view.viewW || 0,
       viewH: this.view.viewH || 0,
@@ -1083,6 +1071,10 @@ class Engine {
       juliaRe: this.juliaReT,
       juliaIm: this.juliaImT,
       extra: this.extraT,
+      usesJulia: !!f.julia,
+      canPickJulia: f.id === "mandelbrot",
+      extraLabel: f.extraLabel || null,
+      extraRange: f.extraRange || [-2, 2],
       animatePalette: this.animatePalette,
       breathe: this.breathe,
       beatMode: this.beatMode,

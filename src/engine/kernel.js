@@ -34,7 +34,11 @@ export function fillRows(buf, state, y0, y1) {
   }
   if (state.formula >= 12) fillShape(buf, state, y0, y1);
   else if (state.formula >= 8) fillSpecial(buf, state, y0, y1);
-  else if (state.deep) fillEscape(buf, state, y0, y1, deepPixel, deepContext(state));
+  else if (state.deep) {
+    const k = deepContext(state);
+    fillEscape(buf, state, y0, y1, deepPixel, k);
+    if (k.cont) buf.cont = k.cont;
+  }
   else if (state.dem && demSupported(state)) fillDistance(buf, state, y0, y1);
   else fillEscape(buf, state, y0, y1);
 }

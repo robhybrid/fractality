@@ -10,6 +10,7 @@ import { bigDiff, bigFromDouble, dropOrbit, putOrbit, rebits } from "./deep.js";
 export class DeepReference {
   constructor() {
     this.store = new Map();
+    this.byId = new Map();
     this.current = null;
     this.pending = null;
     this.seq = 0;
@@ -63,7 +64,7 @@ export class DeepReference {
     const julia = (s.formula | 0) === 1;
     const id = ++this.seq * 2;
     const maxIter = Math.min(BUDGET.maxDeepIter * 2, Math.max(2000, (s.iters | 0) * 2));
-    this.pending = { id, critId: julia ? id + 1 : 0, x, y, bits, formula: s.formula | 0, jre: s.juliaRe, jim: s.juliaIm, maxIter };
+    this.pending = { id, critId: julia ? id + 1 : 0, x, y, bits, formula: s.formula | 0, jre: s.juliaRe, jim: s.juliaIm, maxIter, root: id };
     this.worker.postMessage({ id, x, y, bits, maxIter, julia, jre: s.juliaRe, jim: s.juliaIm });
   }
 
@@ -77,7 +78,33 @@ export class DeepReference {
       putOrbit(job.critId, msg.C, msg.CN);
       this.store.set(job.critId, { Z: msg.C, N: msg.CN });
     }
-    this.current = { ...job, N: msg.N, escaped: msg.escaped, ms: msg.ms };
+    const orbit = { ...job, N: msg.N, escaped: msg.escaped, ms: msg.ms };
+    this.byId.set(job.id, orbit);
+    if (!job.of || this.current?.id === job.of) this.current = orbit;
+  }
+
+  /** The orbit with this id, or a longer one computed from the same point, if it covers n iterations. */
+  covering(id, n) {
+    let orbit = this.byId.get(id);
+    for (const other of this.byId.values()) {
+      if (other.root === orbit?.root && other.N > (orbit?.N || 0)) orbit = other;
+    }
+    if (!orbit) return null;
+    return orbit.escaped || orbit.N > n + 1 ? orbit : null;
+  }
+
+  /**
+   * The same reference point carried further, so saved pixel states (offsets
+   * from Z_m) stay valid. Returns false while another orbit is being computed.
+   */
+  extend(id, maxIter) {
+    const base = this.byId.get(id);
+    if (!base || this.pending) return false;
+    const nid = ++this.seq * 2;
+    const julia = base.formula === 1;
+    this.pending = { ...base, id: nid, critId: julia ? nid + 1 : 0, maxIter, of: id, root: base.root };
+    this.worker.postMessage({ id: nid, x: base.x, y: base.y, bits: base.bits, maxIter, julia, jre: base.jre, jim: base.jim });
+    return true;
   }
 
   orbit(id) {
@@ -90,6 +117,7 @@ export class DeepReference {
     for (const id of this.store.keys()) {
       if (keep.has(id) || id === this.current?.id || id === this.current?.critId) continue;
       this.store.delete(id);
+      this.byId.delete(id);
       dropOrbit(id);
       dropped.push(id);
     }

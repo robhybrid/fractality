@@ -1,7 +1,7 @@
 import { refineRows } from "./antialias.js";
-import { dropOrbit, putOrbit } from "./deep.js";
+import { contPack, contTransfer, deepContext, deepContinue, dropOrbit, putOrbit } from "./deep.js";
 import { demSupported, refineDistanceRows } from "./distance.js";
-import { createBuffer, fillRows, shadeLevels } from "./kernel.js";
+import { createBuffer, fillRows, planeOf, rowStart, shadeLevels } from "./kernel.js";
 
 self.onmessage = (event) => {
   if (event.data.orbit) {
@@ -13,7 +13,15 @@ self.onmessage = (event) => {
     dropOrbit(event.data.drop);
     return;
   }
-  const { gen, y0, y1, state, base } = event.data;
+  const { gen, y0, y1, state, base, cont } = event.data;
+  if (cont) {
+    const r = deepContinue(state, deepContext(state), cont, rowStart, planeOf(state));
+    self.postMessage(
+      { gen, y0, y1, contUpd: r.upd, rest: r.rest },
+      [r.upd.idx.buffer, r.upd.iter.buffer, r.upd.extra.buffer, r.upd.alpha.buffer, ...contTransfer(r.rest)],
+    );
+    return;
+  }
   if (base?.dist && state.dem && demSupported(state)) {
     const r = refineDistanceRows(state, base, y0, y1);
     self.postMessage(
@@ -41,6 +49,10 @@ self.onmessage = (event) => {
     msg.dist = buf.dist;
     msg.lit = buf.lit;
     transfer.push(buf.dist.buffer, buf.lit.buffer);
+  }
+  if (buf.cont) {
+    msg.cont = contPack(buf.cont);
+    transfer.push(...contTransfer(msg.cont));
   }
   self.postMessage(msg, transfer);
 };

@@ -58,6 +58,61 @@ function coordsText(snap) {
   return `${snap.cx.toFixed(5)}  ${snap.cy >= 0 ? "+" : "−"} ${Math.abs(snap.cy).toFixed(5)}i · r ${snap.radius.toExponential(2)}${zoom}`;
 }
 
+const PAD_SPAN = 2;
+
+/**
+ * The Julia constant as a point on the complex plane: click or drag to place
+ * it, Shift-drag to nudge it ten times finer.
+ */
+function JuliaPad({ snap, engine }) {
+  const ref = useRef(null);
+  const drag = useRef(null);
+  const re = snap.juliaRe;
+  const im = snap.juliaIm;
+  const toPad = (v) => ((v + PAD_SPAN) / (2 * PAD_SPAN)) * 100;
+  const place = (event) => {
+    const rect = ref.current.getBoundingClientRect();
+    const d = drag.current;
+    if (event.shiftKey && d) {
+      const k = (2 * PAD_SPAN) / rect.width / 10;
+      engine.setJulia(d.re + (event.clientX - d.x) * k, d.im - (event.clientY - d.y) * k);
+      return;
+    }
+    const x = ((event.clientX - rect.left) / rect.width) * 2 * PAD_SPAN - PAD_SPAN;
+    const y = PAD_SPAN - ((event.clientY - rect.top) / rect.height) * 2 * PAD_SPAN;
+    engine.setJulia(Math.max(-PAD_SPAN, Math.min(PAD_SPAN, x)), Math.max(-PAD_SPAN, Math.min(PAD_SPAN, y)));
+  };
+  return (
+    <div className="julia">
+      <span>
+        Julia constant <kbd>C</kbd>
+        <b>
+          {re.toFixed(4)} {im < 0 ? "−" : "+"} {Math.abs(im).toFixed(4)}i
+        </b>
+      </span>
+      <div
+        ref={ref}
+        className="julia-pad"
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = { x: event.clientX, y: event.clientY, re, im };
+          if (!event.shiftKey) place(event);
+        }}
+        onPointerMove={(event) => {
+          if (drag.current) place(event);
+        }}
+        onPointerUp={() => {
+          drag.current = null;
+        }}
+      >
+        <i className="axis-x" />
+        <i className="axis-y" />
+        <i className="dot" style={{ left: `${toPad(re)}%`, top: `${100 - toPad(im)}%` }} />
+      </div>
+    </div>
+  );
+}
+
 export function Controls({ snap, engine }) {
   if (!engine) return null;
   const stop = snap.stops[snap.selectedStop] || snap.stops[0];
@@ -85,7 +140,7 @@ export function Controls({ snap, engine }) {
         }}
       />
       <p className="status">
-        {snap.viewW}×{snap.viewH} · {snap.backend === "SVG" ? "vector" : `${snap.iters} ${snap.family === "ray" ? "steps" : "iters"}`}
+        {snap.viewW}×{snap.viewH} · {snap.backend === "SVG" ? "vector" : snap.contIters > snap.iters ? `${snap.contIters.toLocaleString()} iters${snap.contDone ? "" : " and rising"}` : `${snap.iters} ${snap.family === "ray" ? "steps" : "iters"}`}
         {" · "}
         {snap.backend || "CPU"}
         {snap.antialiased ? " · antialiased" : ""}
@@ -110,7 +165,7 @@ export function Controls({ snap, engine }) {
           </label>
 
           <div className="modes">
-            {snap.modes.map((mode) => (
+            {snap.modes.filter((mode) => mode.id !== "julia" || snap.usesJulia || snap.canPickJulia).map((mode) => (
               <button
                 key={mode.id}
                 type="button"
@@ -163,9 +218,10 @@ export function Controls({ snap, engine }) {
           <Slider label="Color density" min={0.004} max={0.2} step={0.001} value={snap.density} onChange={(v) => engine.setDensity(v)} />
           <Slider label="Rotation" min={-3.14} max={3.14} step={0.01} value={snap.rotation} onChange={(v) => engine.setRotation(v)} />
           <Slider label="Bailout" min={4} max={512} step={1} value={snap.bailout} format={(v) => String(Math.round(v))} onChange={(v) => engine.setBailout(v)} />
-          <Slider label="Julia real" min={-2} max={2} step={0.001} value={snap.juliaRe} onChange={(v) => engine.setJulia(v, snap.juliaIm)} />
-          <Slider label="Julia imag" min={-2} max={2} step={0.001} value={snap.juliaIm} onChange={(v) => engine.setJulia(snap.juliaRe, v)} />
-          <Slider label="Extra" min={-2} max={2} step={0.01} value={snap.extra} onChange={(v) => engine.setExtra(v)} />
+          {snap.usesJulia ? <JuliaPad snap={snap} engine={engine} /> : null}
+          {snap.extraLabel ? (
+            <Slider label={snap.extraLabel} min={snap.extraRange[0]} max={snap.extraRange[1]} step={0.01} value={snap.extra} onChange={(v) => engine.setExtra(v)} />
+          ) : null}
           <Slider label="Detail" min={0.45} max={1} step={0.01} value={snap.detail} onChange={(v) => engine.setDetail(v)} />
 
           <label className="field">

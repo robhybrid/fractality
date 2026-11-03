@@ -2,6 +2,7 @@ import { BUDGET } from "../budget.js";
 import { antialiasEligible } from "./antialias.js";
 import { fitSize } from "./color.js";
 import { applyDistance, paintDistance, storeDistance } from "./distance.js";
+import { contTransfer } from "./deep.js";
 import { DeepReference } from "./deepRef.js";
 import { createBuffer, fillAll, fillRows, shadeLevels } from "./kernel.js";
 import { buildLut, interiorColor, paint } from "./shade.js";
@@ -239,6 +240,14 @@ export class Presenter {
   }
 
   dispatch(worker, job) {
+    if (job.cont) {
+      const data = job.contData[job.next];
+      job.next += 1;
+      this.sendOrbits(worker, job.state.deep);
+      const cont = { idx: data.idx.slice(), dx: data.dx.slice(), dy: data.dy.slice(), m: data.m.slice(), n: data.n.slice(), crit: data.crit.slice() };
+      worker.postMessage({ gen: job.gen, y0: data.y0, y1: data.y1, state: job.state, cont }, contTransfer(cont));
+      return;
+    }
     const [y0, y1] = job.chunks[job.next];
     job.next += 1;
     if (job.state.deep) this.sendOrbits(worker, job.state.deep);
@@ -315,16 +324,30 @@ export class Presenter {
       if (job && job.kind === "workers" && job.next < job.chunks.length) this.dispatch(this.idle.pop(), job);
       return;
     }
-    const off = msg.y0 * job.buf.w;
-    job.buf.iter.set(msg.iter, off);
-    job.buf.extra.set(msg.extra, off);
-    job.buf.alpha.set(msg.alpha, off);
-    storeDistance(job.buf, msg, off);
-    if (msg.aa) {
-      job.buf.band.set(msg.band, off);
-      job.buf.cover.set(msg.cover, off);
+    if (msg.contUpd) {
+      const { buf } = job;
+      const u = msg.contUpd;
+      for (let i = 0; i < u.idx.length; i += 1) {
+        const at = u.idx[i];
+        buf.iter[at] = u.iter[i];
+        buf.extra[at] = u.extra[i];
+        buf.alpha[at] = u.alpha[i];
+        if (u.alpha[i] || !u.extra[i]) job.resolved += 1;
+      }
+      if (msg.rest.idx.length) job.rest.push({ y0: msg.y0, y1: msg.y1, ...msg.rest });
     } else {
-      job.buf.level.set(msg.level, off);
+      const off = msg.y0 * job.buf.w;
+      job.buf.iter.set(msg.iter, off);
+      job.buf.extra.set(msg.extra, off);
+      job.buf.alpha.set(msg.alpha, off);
+      storeDistance(job.buf, msg, off);
+      if (msg.aa) {
+        job.buf.band.set(msg.band, off);
+        job.buf.cover.set(msg.cover, off);
+      } else {
+        job.buf.level.set(msg.level, off);
+      }
+      if (msg.cont?.idx.length) (job.buf.cont ||= []).push({ y0: msg.y0, y1: msg.y1, ...msg.cont });
     }
     job.remaining -= 1;
     if (job.next < job.chunks.length) this.dispatch(worker, job);
@@ -349,6 +372,10 @@ export class Presenter {
   finish(job) {
     if (this.job !== job) return;
     const ms = performance.now() - job.started;
+    if (job.cont) {
+      this.finishContinue(job, ms);
+      return;
+    }
     if (job.aa) {
       const partial = [];
       const { cover } = job.buf;
@@ -373,6 +400,72 @@ export class Presenter {
     this.job = null;
     if (job.state.deep && !job.aa) this.deepStats(job, ms);
     this.show(job.buf, job.view, job.ident, job.sig, job.state);
+  }
+
+  /**
+   * Deep pixels that hit the iteration limit without settling into a cycle
+   * keep their perturbation state. Each pass doubles their budget and carries
+   * on from where they stopped, so only the unresolved pixels cost anything
+   * and the limit keeps rising while passes still resolve pixels.
+   */
+  startContinue() {
+    const shown = this.shown;
+    const prev = shown.contIters || shown.state.iters;
+    const next = Math.min(BUDGET.maxContIter, Math.ceil(prev * 2));
+    if (next <= prev || !this.deepRef) {
+      shown.contDone = true;
+      return;
+    }
+    const deep = shown.state.deep;
+    const orbit = this.deepRef.covering(deep.id, next);
+    if (!orbit) {
+      this.deepRef.extend(deep.id, Math.ceil(next * 1.25) + 64);
+      return;
+    }
+    this.pruneOrbits({ state: { deep: { id: orbit.id, critId: orbit.critId } } });
+    const { buf } = shown;
+    const out = createBuffer(buf.w, buf.h);
+    out.iter.set(buf.iter);
+    out.extra.set(buf.extra);
+    out.alpha.set(buf.alpha);
+    out.level = buf.level.slice();
+    const contData = buf.cont;
+    const pending = contData.reduce((sum, c) => sum + c.idx.length, 0);
+    const job = {
+      sig: shown.sig,
+      soft: false,
+      cont: true,
+      state: { ...shown.state, iters: next, keepCont: true, deep: { ...deep, id: orbit.id, critId: orbit.critId } },
+      buf: out,
+      view: { ...shown.view },
+      ident: shown.ident,
+      started: performance.now(),
+      gen: ++this.gen,
+      next: 0,
+      remaining: contData.length,
+      chunks: contData.map((c) => [c.y0, c.y1]),
+      contData,
+      kind: "workers",
+      rest: [],
+      resolved: 0,
+      pending,
+      weak: shown.contWeak || 0,
+    };
+    this.job = job;
+    while (this.idle.length && job.next < job.chunks.length) this.dispatch(this.idle.pop(), job);
+  }
+
+  finishContinue(job, ms) {
+    shadeLevels(job.buf);
+    job.buf.cont = job.rest;
+    const left = job.rest.reduce((sum, c) => sum + c.idx.length, 0);
+    const weak = job.resolved < Math.max(8, job.pending * 0.004);
+    this.job = null;
+    this.show(job.buf, job.view, job.ident, job.sig, job.state);
+    this.shown.contIters = job.state.iters;
+    this.shown.contWeak = weak ? job.weak + 1 : 0;
+    this.shown.contDone = left === 0 || this.shown.contWeak >= 2 || job.state.iters >= BUDGET.maxContIter;
+    this.contMs = ms;
   }
 
   /** Adds the reference orbit to a deep state, or returns null until one is ready. */
@@ -540,7 +633,7 @@ export class Presenter {
       return { pending: true, viewW: this.shown?.buf.w || 0, viewH: this.shown?.buf.h || 0, flip: false, deepInfo: this.deepInfo };
     }
     if (state.soft) this.settled = false;
-    if (this.job && ((state.soft && !this.job.soft) || (state.deep && this.job.state.iters !== state.iters))) {
+    if (this.job && ((state.soft && !this.job.soft) || (state.deep && !this.job.cont && this.job.state.iters !== state.iters))) {
       this.job = null;
       this.gen += 1;
       this.lastJobSig = "";
@@ -552,7 +645,7 @@ export class Presenter {
       if (step * 3 < w * h) [w, h] = fitSize(w, h, step);
     }
     const sig = `${paramKey(state)}|${geomKey(state)}|${w}x${h}`;
-    if (this.job?.aa && sig !== this.job.sig) {
+    if ((this.job?.aa || this.job?.cont) && sig !== this.job.sig) {
       this.job = null;
       this.gen += 1;
     }
@@ -560,6 +653,9 @@ export class Presenter {
     const shown = this.shown;
     if (!this.job && !state.soft && state.antialias !== false && this.workers.length && shown?.sig === sig && !shown.buf.cover && this.aaSig !== sig && antialiasEligible(shown.state)) {
       this.startAntialias();
+    }
+    if (!this.job && !state.soft && state.keepCont && this.workers.length && shown?.sig === sig && shown.state?.deep && shown.buf.cont?.length && !shown.contDone) {
+      this.startContinue();
     }
     if (this.job?.kind === "main") this.stepMain(this.job);
     else if (this.job?.kind === "tiles") this.stepTiles(this.job);
