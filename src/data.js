@@ -11,6 +11,15 @@ export const MODES = [
   { id: "trap", key: "O", label: "Trap", blurb: "Drag to move the orbit trap" },
 ];
 
+/** How ray-marched 3D fractals are lit; ids match SHADE_MODES in kernel.js. */
+export const SHADE_MODES_3D = [
+  { id: "lit", label: "Lit surface" },
+  { id: "clay", label: "Clay" },
+  { id: "normals", label: "Normals" },
+  { id: "depth", label: "Depth fog" },
+  { id: "glow", label: "Glow (palette cycling)" },
+];
+
 export const COLOR_MODES = [
   { id: "bands", label: "Solid bands" },
   { id: "blend", label: "Blended bands" },

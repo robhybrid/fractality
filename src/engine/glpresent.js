@@ -1,6 +1,5 @@
-import { LUT_SIZE, indexFor, paint } from "./shade.js";
+import { LEVELS, LUT_SIZE, indexFor, paint } from "./shade.js";
 
-const LEVELS = 80;
 const INTERIOR = 0xffffffff;
 
 const VERT = `
@@ -272,6 +271,12 @@ export function createGlPresent() {
         slow = performance.now() - t0 > 12 ? slow + 1 : 0;
       }
       return slow < 3;
+    },
+    /** Hides the overlay while the 2D canvas under it shows a frame this path cannot color. */
+    hide() {
+      if (hidden) return;
+      canvas.style.visibility = "hidden";
+      hidden = true;
     },
     /** Shows this canvas over `under` instead of copying into it; false if it cannot. */
     attach(under) {

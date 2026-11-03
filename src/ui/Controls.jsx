@@ -224,16 +224,29 @@ export function Controls({ snap, engine }) {
           ) : null}
           <Slider label="Detail" min={0.45} max={1} step={0.01} value={snap.detail} onChange={(v) => engine.setDetail(v)} />
 
-          <label className="field">
-            Gradient mode <kbd>`</kbd>
-            <select value={snap.colorMode} onChange={(event) => engine.setColorMode(Number(event.target.value))}>
-              {(snap.colorModes || []).map((item, index) => (
-                <option key={item.id} value={index}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          {snap.family === "ray" ? (
+            <label className="field">
+              3D shading <kbd>`</kbd>
+              <select value={snap.shade3d} onChange={(event) => engine.setShade3d(event.target.value)}>
+                {(snap.shadeModes || []).map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label className="field">
+              Gradient mode <kbd>`</kbd>
+              <select value={snap.colorMode} onChange={(event) => engine.setColorMode(Number(event.target.value))}>
+                {(snap.colorModes || []).map((item, index) => (
+                  <option key={item.id} value={index}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="check">
             <input type="checkbox" checked={!!snap.deRelief} onChange={(event) => engine.setDeRelief(event.target.checked)} />
             Distance relief: 3D light and boundary filaments on any mode

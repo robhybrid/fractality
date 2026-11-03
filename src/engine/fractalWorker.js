@@ -43,8 +43,12 @@ self.onmessage = (event) => {
   buf.source = state.family === "ifs" ? 1 : 0;
   fillRows(buf, state, y0, y1);
   shadeLevels(buf);
-  const msg = { gen, y0, y1, iter: buf.iter, extra: buf.extra, alpha: buf.alpha, level: buf.level };
+  const msg = { gen, y0, y1, iter: buf.iter, extra: buf.extra, alpha: buf.alpha, level: buf.level, source: buf.source };
   const transfer = [buf.iter.buffer, buf.extra.buffer, buf.alpha.buffer, buf.level.buffer];
+  if (buf.rgb) {
+    msg.rgb = buf.rgb;
+    transfer.push(buf.rgb.buffer);
+  }
   if (buf.dist) {
     msg.dist = buf.dist;
     msg.lit = buf.lit;

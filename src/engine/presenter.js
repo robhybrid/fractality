@@ -26,7 +26,7 @@ function paramKey(s) {
     s.dem ? (s.deKoebe ? 2 : 1) : 0,
     s.frameKey || "",
     s.deep ? "deep" : "",
-    s.family === "ray" ? `${s.camKey}:${s.steps}:${s.rayIters}` : "",
+    s.family === "ray" ? `${s.camKey}:${s.steps}:${s.rayIters}:${s.shade3d || ""}` : "",
   ].join(":");
 }
 
@@ -369,6 +369,8 @@ export class Presenter {
         job.buf.level.set(msg.level, off);
       }
       if (msg.cont?.idx.length) (job.buf.cont ||= []).push({ y0: msg.y0, y1: msg.y1, ...msg.cont });
+      if (msg.source !== undefined) job.buf.source = msg.source;
+      if (msg.rgb) (job.buf.rgb ||= new Uint32Array(job.buf.w * job.buf.h)).set(msg.rgb, off);
     }
     job.remaining -= 1;
     if (job.next < job.chunks.length) this.dispatch(worker, job);
@@ -792,7 +794,10 @@ export class Presenter {
     const glp = this.glp;
     const shown = this.shown;
     const { buf } = shown;
-    if (!glp.fits(buf.w, buf.h, W, H)) return false;
+    if (buf.rgb || !glp.fits(buf.w, buf.h, W, H)) {
+      glp.hide?.();
+      return false;
+    }
     try {
       const { gain, lutKey } = this.lutFor(state);
       if (lutKey !== this.glLutKey) {

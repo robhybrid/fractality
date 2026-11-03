@@ -1,5 +1,6 @@
 export const LUT_SIZE = 1024;
-const LEVELS = 80;
+/** Table rows: 64 stripe x edge rows, then 32 brightness rows (IFS density and lit 3D surfaces). */
+export const LEVELS = 96;
 const STRIPE_MIX = 0.72 / 15;
 
 function mixPalette(palA, palB, mix) {
@@ -75,8 +76,8 @@ export function buildLut({ palA, palB, mix, post, edge, gain }) {
         lut[(el * 16 + m) * LUT_SIZE + j] = pack(r * k, g * k, b * k);
       }
     }
-    for (let l = 0; l < 16; l += 1) {
-      const s = (l / 15) * k;
+    for (let l = 0; l < 32; l += 1) {
+      const s = (l / 31) * k;
       lut[(64 + l) * LUT_SIZE + j] = pack(c1[0] * s, c1[1] * s, c1[2] * s);
     }
   }
@@ -161,7 +162,8 @@ export function indexFor(buf, mode, density, maxIter) {
   const out = buf.pidx && buf.pidx.length === n ? buf.pidx : new Uint32Array(n);
   const dens = (buf.source === 1 ? 0.18 + density * 6 : density) * LUT_SIZE;
   const mask = LUT_SIZE - 1;
-  const flat = buf.source !== 1;
+  const shaded = buf.source === 2;
+  const flat = buf.source === 0;
   const remap = flat && mode >= 3 ? remapFor(buf, mode, density, maxIter) : null;
   for (let i = 0; i < n; i += 1) {
     if (alpha[i] === 0) {
@@ -175,6 +177,7 @@ export function indexFor(buf, mode, density, maxIter) {
     else if (flat) step = soften(iter[i]) * dens;
     else step = iter[i] * dens;
     if (!flat || mode === 2) row = level[i];
+    if (shaded) step = iter[i] * dens;
     out[i] = (row << 10) | ((step | 0) & mask);
   }
   buf.pidx = out;
@@ -187,6 +190,11 @@ export function indexFor(buf, mode, density, maxIter) {
  * with stripes and edges, 3 exponential cyclic, 4 histogram.
  */
 export function paint(buf, out32, lut, phase, density, interior, mode = 0, maxIter = 100) {
+  if (buf.rgb) {
+    const { rgb, alpha } = buf;
+    for (let i = 0; i < rgb.length; i += 1) out32[i] = alpha[i] ? rgb[i] : interior;
+    return;
+  }
   const pidx = indexFor(buf, mode, density, maxIter);
   const n = pidx.length;
   const ph = ((phase - Math.floor(phase)) * LUT_SIZE) | 0;

@@ -805,7 +805,22 @@ function fillRay(buf, state, y0, y1) {
   const jx = state.juliaRe || 0;
   const jy = state.juliaIm || 0;
   const jz = state.extra || 0;
-  buf.source = 0;
+  const mode = SHADE_MODES.indexOf(state.shade3d || "glow");
+  const lit = mode > 0;
+  buf.source = mode === 1 || mode === 4 ? 2 : 0;
+  const n = buf.iter.length;
+  if (buf.source === 2 && (!buf.level || buf.level.length !== n)) buf.level = new Uint8Array(n);
+  if (mode === 2 || mode === 3) {
+    if (!buf.rgb || buf.rgb.length !== n) buf.rgb = new Uint32Array(n);
+  } else buf.rgb = null;
+  const gain = (state.exposure || 1) * 255;
+  // Key light from the upper left of the camera, so form reads the same from every angle.
+  const L = normalize3([
+    -0.45 * cam.right[0] + 0.6 * cam.up[0] - 0.65 * cam.forward[0],
+    -0.45 * cam.right[1] + 0.6 * cam.up[1] - 0.65 * cam.forward[1],
+    -0.45 * cam.right[2] + 0.6 * cam.up[2] - 0.65 * cam.forward[2],
+  ]);
+  const de = (px, py, pz) => mapScene(px, py, pz, shape, power, iters, jx, jy, jz);
   const ex = cam.eye[0];
   const ey = cam.eye[1];
   const ez = cam.eye[2];
@@ -840,13 +855,32 @@ function fillRay(buf, state, y0, y1) {
       let glow = 0;
       let hit = false;
       let used = 0;
+      let near = Infinity;
+      let nearT = t;
       for (let i = 0; i < steps && t <= far && !hit; i += 1) {
         const dist = mapScene(ex + dx * t, ey + dy * t, ez + dz * t, shape, power, iters, jx, jy, jz);
         const eps = Math.max(floor, t * pixel);
         glow += Math.exp((-Math.max(dist, 0) / Math.max(t, eps)) * 17) * glowGain;
         used = i;
+        if (dist / eps < near) {
+          near = dist / eps;
+          nearT = t;
+        }
         if (dist < eps) hit = true;
         else t += Math.min(0.4, Math.max(eps * 0.5, dist * 0.92));
+      }
+      // Out of steps a few pixels from the surface (dense formulas): light it as a hit rather than leave a speck of background.
+      if (lit && !hit && near < 6) {
+        hit = true;
+        t = nearT;
+      }
+      if (lit) {
+        if (!hit) {
+          paintEscape(buf, idx, false, 0, 0);
+          continue;
+        }
+        shadeHit(buf, idx, mode, de, ex + dx * t, ey + dy * t, ez + dz * t, dx, dy, dz, t, Math.max(floor, t * pixel), 1 - used / Math.max(steps, 1), L, cam.up, gain);
+        continue;
       }
       if (!hit && glow < 0.03) paintEscape(buf, idx, false, 0, 0);
       else {
@@ -855,6 +889,83 @@ function fillRay(buf, state, y0, y1) {
       }
     }
   }
+}
+
+/** 3D surface looks; "glow" is the original palette-cycling march glow. */
+export const SHADE_MODES = ["glow", "lit", "clay", "normals", "depth"];
+
+function normalize3(v) {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
+
+function packRgb(r, g, b) {
+  const R = r <= 0 ? 0 : r >= 255 ? 255 : r | 0;
+  const G = g <= 0 ? 0 : g >= 255 ? 255 : g | 0;
+  const B = b <= 0 ? 0 : b >= 255 ? 255 : b | 0;
+  return (0xff000000 | (B << 16) | (G << 8) | R) >>> 0;
+}
+
+/**
+ * Lighting at a ray hit: tetrahedral-difference normal (four distance
+ * estimates), a camera-relative key light with specular, rim light, sky fill,
+ * and ambient occlusion from the march step count plus one probe along the
+ * normal. Lit and depth modes keep the palette (hue from the march, brightness
+ * from the light through the table's brightness rows); clay and normals write
+ * colors directly.
+ */
+function shadeHit(buf, idx, mode, de, px, py, pz, dx, dy, dz, t, eps, march, L, up, gain) {
+  const h = eps * 0.7;
+  const a = de(px + h, py - h, pz - h);
+  const b = de(px - h, py - h, pz + h);
+  const c = de(px - h, py + h, pz - h);
+  const d = de(px + h, py + h, pz + h);
+  let nx = a - b - c + d;
+  let ny = -a - b + c + d;
+  let nz = -a + b - c + d;
+  const nl = Math.hypot(nx, ny, nz) || 1;
+  nx /= nl;
+  ny /= nl;
+  nz /= nl;
+  const nv = -(nx * dx + ny * dy + nz * dz);
+  if (nv < 0) {
+    nx = -nx;
+    ny = -ny;
+    nz = -nz;
+  }
+  const probe = eps * 14;
+  const occ = Math.max(0, Math.min(1, de(px + nx * probe, py + ny * probe, pz + nz * probe) / probe));
+  const ao = Math.max(0.15, Math.min(1, (0.35 + 0.65 * occ) * (0.4 + 0.6 * march)));
+  const nL = nx * L[0] + ny * L[1] + nz * L[2];
+  const diff = Math.max(0, nL);
+  const rx = 2 * nL * nx - L[0];
+  const ry = 2 * nL * ny - L[1];
+  const rz = 2 * nL * nz - L[2];
+  const spec = diff > 0 ? Math.max(0, -(rx * dx + ry * dy + rz * dz)) ** 28 : 0;
+  const rim = (1 - Math.max(0, Math.abs(nv))) ** 3;
+  const sky = Math.max(0, nx * up[0] + ny * up[1] + nz * up[2]);
+  const light = Math.min(1, 0.1 + 0.72 * diff * ao + 0.18 * sky * ao + 0.38 * spec + 0.14 * rim);
+  buf.alpha[idx] = 1;
+  buf.extra[idx] = 0;
+  if (mode === 1) {
+    buf.iter[idx] = Math.hypot(px, py, pz) * 9 + march * 14;
+    buf.level[idx] = 64 + Math.round(Math.sqrt(light) * 31);
+    return;
+  }
+  if (mode === 4) {
+    buf.iter[idx] = -Math.log2(Math.max(t, 1e-12)) * 6;
+    buf.level[idx] = 64 + Math.round(Math.sqrt(Math.min(1, 0.2 + 0.8 * ao * (0.4 + 0.6 * diff))) * 31);
+    return;
+  }
+  buf.iter[idx] = 1;
+  if (mode === 2) {
+    const k = Math.sqrt(light) * gain;
+    const warm = 0.04 * sky;
+    buf.rgb[idx] = packRgb(k * (0.9 - warm), k * 0.86, k * (0.8 + warm * 2));
+    return;
+  }
+  const k = Math.sqrt(0.3 + 0.7 * light * 1.1) * gain;
+  buf.rgb[idx] = packRgb((nx * 0.5 + 0.5) * k, (ny * 0.5 + 0.5) * k, (nz * 0.5 + 0.5) * k);
 }
 
 export function mapScene(x, y, z, shape, power, iters, jx = 0, jy = 0, jz = 0) {
@@ -1050,10 +1161,11 @@ export function shadeLevels(buf) {
   const n = iter.length;
   if (!buf.level || buf.level.length !== n) buf.level = new Uint8Array(n);
   const level = buf.level;
+  if (buf.source === 2 || buf.rgb) return;
   if (buf.source === 1) {
     for (let i = 0; i < n; i += 1) {
       const v = iter[i];
-      level[i] = 64 + Math.round(smoothstep(0.015, 0.22, v) * 15);
+      level[i] = 64 + Math.round(smoothstep(0.015, 0.22, v) * 31);
       iter[i] = Math.log(1 + v * 16);
       alpha[i] = 1;
     }

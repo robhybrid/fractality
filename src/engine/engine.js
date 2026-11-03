@@ -1,5 +1,5 @@
 import { BUDGET } from "../budget.js";
-import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, cloneStops } from "../data.js";
+import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, SHADE_MODES_3D, cloneStops } from "../data.js";
 import { BeatListener } from "./audio.js";
 import { clamp, cssGradient, fitSize, randomPalette, rasterize, shiftHue, smoothDamp } from "./color.js";
 import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, renormStep } from "./frames.js";
@@ -55,6 +55,7 @@ class Engine {
     this.edge = 0.55;
     this.post = 1;
     this.colorMode = 1;
+    this.shade3d = "lit";
     this.colorInterior = false;
     this.deRelief = false;
     this.autoIter = true;
@@ -917,6 +918,7 @@ class Engine {
       colorInterior: this.colorInterior,
       post: this.post,
       colorMode: this.distanceMode() ? 1 : this.colorMode,
+      shade3d: this.shade3d,
       ...this.distanceState(),
       capture: offline ? false : this.capture,
     };
@@ -1130,6 +1132,8 @@ class Engine {
       post: this.post,
       colorMode: this.colorMode,
       colorModes: COLOR_MODES,
+      shade3d: this.shade3d,
+      shadeModes: SHADE_MODES_3D,
       deRelief: this.deRelief,
       detail: this.detail,
       paused: this.paused,
@@ -1239,7 +1243,8 @@ class Engine {
       this.colorInterior = !this.colorInterior;
       this.publish(true);
     } else if (key === "`" || key === "~") {
-      this.setColorMode(this.colorMode + (event.shiftKey ? -1 : 1));
+      if (this.fractal.family === "ray") this.cycleShade3d(event.shiftKey ? -1 : 1);
+      else this.setColorMode(this.colorMode + (event.shiftKey ? -1 : 1));
     } else if (key === "w" || key === "W") {
       this.post = (this.post + 1) % 3;
       this.publish(true);
@@ -1344,6 +1349,18 @@ class Engine {
   setColorMode(value) {
     this.colorMode = (value + COLOR_MODES.length) % COLOR_MODES.length;
     this.publish(true);
+  }
+
+  setShade3d(id) {
+    if (!SHADE_MODES_3D.some((item) => item.id === id)) return;
+    this.shade3d = id;
+    this.dirty = true;
+    this.publish(true);
+  }
+
+  cycleShade3d(step) {
+    const i = SHADE_MODES_3D.findIndex((item) => item.id === this.shade3d);
+    this.setShade3d(SHADE_MODES_3D[(i + step + SHADE_MODES_3D.length) % SHADE_MODES_3D.length].id);
   }
 
   distanceMode() {

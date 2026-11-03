@@ -265,6 +265,7 @@ export function samplePose(keys, t, tracks = buildTracks(keys)) {
   if (u >= 1) {
     pose.color.post = b.color.post;
     pose.color.colorMode = b.color.colorMode;
+    pose.color.shade3d = b.color.shade3d;
     pose.color.colorInterior = b.color.colorInterior;
   }
   if (!same) return pose;
@@ -365,6 +366,7 @@ export class MovieMaker {
         edge: e.edge,
         post: e.post,
         colorMode: e.colorMode,
+        shade3d: e.shade3d,
         colorInterior: e.colorInterior,
         paletteIndex: e.paletteIndex,
         stops: (e.fade < 1 && e.pendingStops ? e.pendingStops : e.stops).map((s) => ({ ...s })),
@@ -532,6 +534,7 @@ export class MovieMaker {
     e.edge = c.edge;
     e.post = c.post;
     e.colorMode = c.colorMode;
+    if (c.shade3d) e.shade3d = c.shade3d;
     e.colorInterior = c.colorInterior;
     e.paletteIndex = c.paletteIndex;
     const { a, b, mix } = pose.palette;
