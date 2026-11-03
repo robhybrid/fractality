@@ -1186,7 +1186,7 @@ export class Presenter {
       }
       if (!state) throw new Error("Deep zoom reference orbit was not ready for export.");
     }
-    const job = this.makeJob({ ...state, soft: false, guess: "off", capture: false }, w, h, "still");
+    const job = this.makeJob({ ...state, soft: false, guess: undefined, capture: false }, w, h, "still");
     let buf = await this.runStill(job);
     if (state.antialias !== false && this.workers.length && antialiasEligible(job.state)) {
       const aa = this.antialiasJob({ buf, view: job.view, ident: job.ident, sig: "still-aa", state: job.state });

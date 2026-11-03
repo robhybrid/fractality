@@ -1,4 +1,5 @@
 import { demSupported, fillDistance } from "./distance.js";
+import { rectFill, rectSafe } from "./rectfill.js";
 import { frameInfo, GASKET, REACH, SPAN } from "./frames.js";
 import { deepContext, deepPixel } from "./deep.js";
 
@@ -234,9 +235,12 @@ function fillEscape(buf, state, y0, y1, pixel = escapePixel, c = escapeContext(s
   const p = planeOf(state);
   const w = buf.w;
   buf.source = 0;
-  const guess = state.guess || (state.soft ? "full" : "off");
+  // Settled frames use rectangle checking (exact inside the set; exterior bands interpolated to within ~0.02
+  // of an iteration). Gradient mode keeps the exterior exact because its stripes are not smooth within a band.
+  const guess = state.guess || (state.soft ? "full" : (state.colorMode | 0) === 2 ? "rect" : "rectx");
   const rows = y1 - y0;
-  if (guess === "off" || rows < 3 || w < 3) {
+  if ((guess === "rect" || guess === "rectx") && rectSafe(state) && rectFill(buf, state, y0, y1, pixel, c, p, rowStart, guess === "rectx")) return;
+  if (guess === "off" || guess === "rect" || guess === "rectx" || rows < 3 || w < 3) {
     for (let y = y0; y < y1; y += 1) {
       const row = rowStart(p, y);
       const o = (y - buf.y0) * w;
