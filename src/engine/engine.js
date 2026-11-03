@@ -907,6 +907,7 @@ class Engine {
       viewH: this.view.viewH || 0,
       iters: this.view.iters || 0,
       power: this.powerT,
+      powerMin: this.powerMin(),
       iterBias: this.iterBias,
       autoIter: this.autoIter,
       paletteIndex: this.paletteIndex,
@@ -1097,9 +1098,14 @@ class Engine {
     this.publish(true);
   }
 
+  /** Mandelbox reads power as its fold scale, which is usually negative. */
+  powerMin() {
+    return this.fractal.id === "box" ? -2.5 : 1;
+  }
+
   setPower(value) {
     this.breathe = false;
-    this.powerT = clamp(value, -2.5, 10);
+    this.powerT = clamp(value, this.powerMin(), 10);
     this.breathBase = this.powerT;
     this.publish(true);
   }

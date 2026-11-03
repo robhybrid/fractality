@@ -120,7 +120,7 @@ export function Controls({ snap, engine }) {
                 : `${snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.`}
           </p>
 
-          <Slider label="Power" min={-2} max={10} step={0.01} value={snap.power} onChange={(v) => engine.setPower(v)} />
+          <Slider label="Power" min={snap.powerMin ?? 1} max={10} step={0.01} value={snap.power} onChange={(v) => engine.setPower(v)} />
           <Slider
             label="Iterations"
             min={24}
