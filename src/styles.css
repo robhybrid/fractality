@@ -265,3 +265,59 @@ details summary { cursor: pointer; color: var(--ink); }
   box-shadow: 0 0 0 3px rgba(142, 231, 200, 0.25);
   pointer-events: none;
 }
+
+.title .close { display: none; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.actions button { width: auto; margin: 0; padding: 6px 10px; }
+.actions button.on { background: var(--mint); color: #07080c; }
+.touch-keys { display: none; }
+.drawer-pull { display: none; }
+
+/* Phones and tablets: the panel is a bottom sheet with a close button; when it is closed a pull tab brings it back. */
+@media (pointer: coarse), (max-width: 700px) {
+  .panel {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: min(52vh, 520px);
+    padding: 12px 14px calc(16px + env(safe-area-inset-bottom));
+    border-radius: 18px 18px 0 0;
+    border-bottom: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .title { align-items: center; }
+  .title .close {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 36px;
+    height: 36px;
+    margin: 0;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 24px;
+    line-height: 1;
+  }
+  .panel kbd, .desk-keys { display: none; }
+  .touch-keys { display: grid; }
+  .modes button, .chips button, .toggles button, .row button, .actions button { min-height: 36px; }
+  .drawer-pull {
+    display: grid;
+    place-items: center;
+    position: fixed;
+    z-index: 2;
+    left: 50%;
+    bottom: 0;
+    width: 88px;
+    height: calc(28px + env(safe-area-inset-bottom));
+    margin: 0 0 0 -44px;
+    padding: 0 0 env(safe-area-inset-bottom);
+    border: 1px solid var(--line);
+    border-bottom: none;
+    border-radius: 14px 14px 0 0;
+    background: rgba(10, 12, 18, 0.78);
+  }
+  .drawer-pull i { display: block; width: 36px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.55); }
+}

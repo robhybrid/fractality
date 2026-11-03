@@ -30,6 +30,11 @@ export default function App() {
       <div className="vignette" aria-hidden="true" />
       {snap?.error ? <div className="error">{snap.error}</div> : null}
       {snap?.name && !snap.hidden ? <Controls snap={snap} engine={engineRef.current} /> : null}
+      {snap?.name && snap.hidden && !snap.error ? (
+        <button type="button" className="drawer-pull" aria-label="Open the control panel" onClick={() => engineRef.current?.setHidden(false)}>
+          <i />
+        </button>
+      ) : null}
     </div>
   );
 }

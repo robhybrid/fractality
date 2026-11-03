@@ -113,8 +113,24 @@ function JuliaPad({ snap, engine }) {
   );
 }
 
+const coarse = () => typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches;
+
+function TouchHelp() {
+  return (
+    <ul className="keys touch-keys">
+      <li><b>drag</b> pan · orbit in 3D</li>
+      <li><b>pinch</b> zoom · fly in 3D</li>
+      <li><b>twist</b> rotate</li>
+      <li><b>hold</b> dive toward finger</li>
+      <li><b>double tap</b> zoom in</li>
+      <li><b>two-finger tap</b> zoom out</li>
+    </ul>
+  );
+}
+
 export function Controls({ snap, engine }) {
   if (!engine) return null;
+  const touch = coarse();
   const stop = snap.stops[snap.selectedStop] || snap.stops[0];
   return (
     <aside className="panel">
@@ -127,6 +143,9 @@ export function Controls({ snap, engine }) {
           <strong>{snap.fps}</strong>
           <span>fps</span>
         </div>
+        <button type="button" className="close" aria-label="Close panel" onClick={() => engine.setHidden(true)}>
+          ×
+        </button>
       </header>
       <p className="coords" title={snap.center ? `${snap.center[0]}\n${snap.center[1]}\nr ${snap.radius.toExponential(3)}` : undefined}>
         {coordsText(snap)}
@@ -164,6 +183,16 @@ export function Controls({ snap, engine }) {
             </select>
           </label>
 
+          <div className="actions">
+            <button type="button" aria-label="Previous fractal" onClick={() => engine.setFractal(snap.index - 1)}>◀</button>
+            <button type="button" aria-label="Next fractal" onClick={() => engine.setFractal(snap.index + 1)}>▶</button>
+            <button type="button" onClick={() => engine.setPalette(snap.paletteIndex + 1)}>Palette</button>
+            {snap.family === "escape" ? <button type="button" onClick={() => engine.flyNext()}>Next place</button> : null}
+            <button type="button" className={snap.paused ? "on" : ""} onClick={() => engine.togglePause()}>{snap.paused ? "Play" : "Pause"}</button>
+            <button type="button" onClick={() => engine.fullscreen()}>Full screen</button>
+            <button type="button" onClick={() => engine.savePng()}>Save image</button>
+          </div>
+
           <div className="modes">
             {snap.modes.filter((mode) => mode.id !== "julia" || snap.usesJulia || snap.canPickJulia).map((mode) => (
               <button
@@ -179,7 +208,11 @@ export function Controls({ snap, engine }) {
             ))}
           </div>
           <p className="hint">
-            {snap.family === "ray"
+            {touch
+              ? snap.family === "ray"
+                ? "Drag to orbit, pinch or hold to fly toward the surface, double tap to hop closer."
+                : "Drag to pan, pinch to zoom and twist to rotate, hold to dive, double tap to zoom in."
+              : snap.family === "ray"
               ? snap.name.includes("Julia") || snap.name.includes("Hybrid") || snap.name.includes("Quaternion")
                 ? "Hold to fly toward the surface. C or Julia mode sets the constant; Extra blends or sets the third component. Shift-drag orbits."
                 : "Hold to fly toward the surface under the cursor. Right-click backs away. Shift-drag or arrows orbit. R returns home."
@@ -327,8 +360,9 @@ export function Controls({ snap, engine }) {
           <p className="hint">Drop a song anywhere. Beat color is free. Beat zoom recomputes the set, so it stays on the cool preview.</p>
 
           <details open={snap.help} onToggle={(event) => engine.setHelp(event.currentTarget.open)}>
-            <summary>Keys, including while this panel is hidden</summary>
-            <ul className="keys">
+            <summary>{touch ? "Touch gestures" : "Keys, including while this panel is hidden"}</summary>
+            {touch ? <TouchHelp /> : null}
+            <ul className="keys desk-keys">
               <li><kbd>H</kbd> hide panel</li>
               <li><kbd>1</kbd>-<kbd>0</kbd> fractals</li>
               <li><kbd>[</kbd><kbd>]</kbd> cycle fractal</li>

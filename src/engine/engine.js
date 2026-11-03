@@ -80,6 +80,9 @@ class Engine {
     this.zoomTarget = 0;
     this.zoomRate = 0;
     this.buttons = new Set();
+    this.touches = new Map();
+    this.gesture = null;
+    this.lastTap = null;
     this.alt = false;
     this.ease = 0.62;
     this.lastPublish = 0;
@@ -108,7 +111,11 @@ class Engine {
     this.onContext = (event) => event.preventDefault();
     this.onDrop = this.onDrop.bind(this);
     this.onDragOver = (event) => event.preventDefault();
-    this.onDbl = (event) => this.nudgeZoom(event, 0.62);
+    this.onDbl = (event) => {
+      // Touch double taps are handled by the gesture code; ignore the synthesized dblclick.
+      if (performance.now() - (this.lastTouchAt || 0) < 900) return;
+      this.nudgeZoom(event, 0.62);
+    };
     this.onResize = () => {
       this.dirty = true;
     };
@@ -117,6 +124,7 @@ class Engine {
     canvas.addEventListener("pointerdown", this.onPointerDown);
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("pointercancel", this.onPointerUp);
     canvas.addEventListener("wheel", this.onWheel, { passive: false });
     canvas.addEventListener("contextmenu", this.onContext);
     canvas.addEventListener("dblclick", this.onDbl);
@@ -130,6 +138,14 @@ class Engine {
     this.svg.setAttribute("aria-hidden", "true");
     canvas.parentElement?.appendChild(this.svg);
     clearVector(this.svg);
+  }
+
+  /** Home views are framed for landscape; on a portrait screen widen them so the whole shape fits across. */
+  portraitFit() {
+    const rect = this.canvas.getBoundingClientRect?.();
+    const w = rect?.width || window.innerWidth || 1;
+    const h = rect?.height || window.innerHeight || 1;
+    return w < h ? Math.min(3, (h / w) * 0.95) : 1;
   }
 
   get fractal() {
@@ -156,6 +172,7 @@ class Engine {
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("pointercancel", this.onPointerUp);
     this.canvas.removeEventListener("wheel", this.onWheel);
     this.canvas.removeEventListener("contextmenu", this.onContext);
     this.canvas.removeEventListener("dblclick", this.onDbl);
@@ -189,8 +206,8 @@ class Engine {
     } else {
       this.cx = home.x;
       this.cy = home.y;
-      this.radius = home.r;
-      this.logR = Math.log(home.r);
+      this.radius = home.r * this.portraitFit();
+      this.logR = Math.log(this.radius);
       this.rotation = home.rot || 0;
     }
     this.tcx = this.cx;
@@ -1384,6 +1401,20 @@ class Engine {
     this.publish(true);
   }
 
+  setHidden(value) {
+    this.hidden = !!value;
+    this.publish(true);
+  }
+
+  togglePause() {
+    this.paused = !this.paused;
+    this.publish(true);
+  }
+
+  savePng() {
+    this.capture = true;
+  }
+
   setHelp(value) {
     this.help = value;
     this.publish(true);
@@ -1547,6 +1578,10 @@ class Engine {
   }
 
   onPointerDown(event) {
+    if (event.pointerType === "touch") {
+      this.touchDown(event);
+      return;
+    }
     this.canvas.focus();
     this.flyLock = null;
     this.movie.stop();
@@ -1568,6 +1603,132 @@ class Engine {
     this.canvas.setPointerCapture?.(event.pointerId);
   }
 
+  /*
+   * Touch: one finger drags (pan, orbit in 3D, or the current mode's drag),
+   * holding still dives toward the finger, a double tap zooms in a step.
+   * Two fingers pinch to zoom (fly in 3D), twist to rotate, and a quick
+   * two-finger tap zooms out a step.
+   */
+  touchPoint(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  pinchState() {
+    const [a, b] = [...this.touches.values()];
+    return {
+      cx: (a.x + b.x) / 2,
+      cy: (a.y + b.y) / 2,
+      dist: Math.hypot(b.x - a.x, b.y - a.y),
+      angle: Math.atan2(b.y - a.y, b.x - a.x),
+    };
+  }
+
+  touchDown(event) {
+    this.lastTouchAt = performance.now();
+    this.canvas.setPointerCapture?.(event.pointerId);
+    this.movie.stop();
+    this.flyLock = null;
+    const p = this.touchPoint(event);
+    this.touches.set(event.pointerId, p);
+    this.buttons.add("touch");
+    const now = performance.now();
+    clearTimeout(this.holdTimer);
+    if (this.touches.size === 1) {
+      this.mx = p.x;
+      this.my = p.y;
+      const tap = this.lastTap;
+      this.gesture = { kind: "one", start: p, t0: now, moved: false, double: !!tap && now - tap.t < 320 && Math.hypot(tap.x - p.x, tap.y - p.y) < 40 };
+      this.holdTimer = setTimeout(() => {
+        const g = this.gesture;
+        if (g?.kind === "one" && !g.moved && this.touches.size === 1 && ["zoom", "zoomout", "pan"].includes(this.mode)) {
+          g.kind = "hold";
+          this.zoomTarget = this.mode === "zoomout" ? BUDGET.zoomOut : BUDGET.zoomIn;
+        }
+      }, 260);
+    } else if (this.touches.size === 2) {
+      this.zoomTarget = 0;
+      this.drag = null;
+      this.gesture = { kind: "pinch", t0: now, moved: false, travel: 0, ...this.pinchState() };
+    }
+  }
+
+  touchMove(event) {
+    const p = this.touchPoint(event);
+    this.touches.set(event.pointerId, p);
+    const g = this.gesture;
+    if (!g) return;
+    if (g.kind === "hold") {
+      this.mx = p.x;
+      this.my = p.y;
+      return;
+    }
+    if (g.kind === "one") {
+      if (!g.moved && Math.hypot(p.x - g.start.x, p.y - g.start.y) < 9) return;
+      if (!g.moved) {
+        g.moved = true;
+        clearTimeout(this.holdTimer);
+        this.drag = ["zoom", "zoomout", "pan"].includes(this.mode) ? "pan" : this.mode;
+        if (this.drag === "julia") this.pickJulia({ offsetX: p.x, offsetY: p.y });
+      }
+      this.pointerDrag(event);
+      return;
+    }
+    if (g.kind !== "pinch" || this.touches.size < 2) return;
+    const s = this.pinchState();
+    const factor = g.dist / Math.max(1, s.dist);
+    g.travel += Math.abs(Math.log(factor)) * 200 + Math.hypot(s.cx - g.cx, s.cy - g.cy);
+    if (g.travel > 12) g.moved = true;
+    this.mx = s.cx;
+    this.my = s.cy;
+    if (this.fractal.family === "ray") {
+      if (Math.abs(factor - 1) > 1e-4) this.zoomAt(s.cx, s.cy, factor);
+    } else {
+      this.mx = g.cx;
+      this.my = g.cy;
+      this.panBy(s.cx - g.cx, s.cy - g.cy);
+      this.mx = s.cx;
+      this.my = s.cy;
+      if (Math.abs(factor - 1) > 1e-4) this.zoomAt(s.cx, s.cy, factor);
+      let turn = s.angle - g.angle;
+      turn -= Math.round(turn / (2 * Math.PI)) * 2 * Math.PI;
+      if (Math.abs(turn) > 1e-4) {
+        const before = this.screenToWorld(s.cx, s.cy);
+        this.rotation -= turn;
+        const after = this.screenToWorld(s.cx, s.cy);
+        this.cx += before.x - after.x;
+        this.cy += before.y - after.y;
+        this.syncTargets();
+      }
+    }
+    Object.assign(g, s);
+    this.dirty = true;
+  }
+
+  touchUp(event) {
+    const g = this.gesture;
+    this.touches.delete(event.pointerId);
+    const now = performance.now();
+    if (g?.kind === "pinch" && this.touches.size === 1) {
+      if (!g.moved && now - g.t0 < 320) this.nudgeZoom({ offsetX: g.cx, offsetY: g.cy }, 1.6);
+      this.gesture = { kind: "rest" };
+      this.lastTap = null;
+    }
+    if (this.touches.size > 0) return;
+    clearTimeout(this.holdTimer);
+    if (g?.kind === "one" && !g.moved && now - g.t0 < 260) {
+      if (g.double) {
+        this.nudgeZoom({ offsetX: g.start.x, offsetY: g.start.y }, 0.5);
+        this.lastTap = null;
+      } else this.lastTap = { t: now, x: g.start.x, y: g.start.y };
+    }
+    this.buttons.delete("touch");
+    this.zoomTarget = 0;
+    this.drag = null;
+    this.pivot = null;
+    this.gesture = null;
+  }
+
   pickJulia(event) {
     const julia = FRACTALS.findIndex((item) => item.id === "julia");
     if (this.fractal.family === "escape" && this.fractal.id !== "julia") {
@@ -1582,6 +1743,14 @@ class Engine {
   }
 
   onPointerMove(event) {
+    if (event.pointerType === "touch" && this.touches.has(event.pointerId)) {
+      this.touchMove(event);
+      return;
+    }
+    this.pointerDrag(event);
+  }
+
+  pointerDrag(event) {
     const rect = this.canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -1618,6 +1787,10 @@ class Engine {
   }
 
   onPointerUp(event) {
+    if (event.pointerType === "touch") {
+      if (this.touches.has(event.pointerId)) this.touchUp(event);
+      return;
+    }
     this.buttons.delete(event.button);
     if (!this.buttons.size) {
       this.zoomTarget = 0;
