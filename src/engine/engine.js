@@ -7,14 +7,20 @@ import { angles, baseGap, basis, clampPitch, lookCamera, march, probe, orbitEye,
 import { MovieMaker } from "./movie.js";
 import { Presenter } from "./presenter.js";
 import { clearVector, isVectorShape, paintVector, rasterizeVector } from "./vector.js";
+import { bigFromDecimal, bigFromDouble, bigToDecimal, bigToDouble, bitsFor, rebits } from "./deep.js";
 
 const HOTKEY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9 };
+/** Below DEEP_ON the view center moves to a BigInt anchor and pixels are rendered by perturbation. */
+const DEEP_ON = 5e-10;
+const DEEP_OFF = 2e-9;
+const DEEP_MIN = 1e-280;
 
 export function createEngine(canvas, { onChange }) {
   const renderer = new Presenter(canvas);
   const audio = new BeatListener();
   const engine = new Engine(canvas, renderer, audio, onChange);
   engine.start();
+  window.fractality = engine;
   return engine;
 }
 
@@ -82,6 +88,11 @@ class Engine {
     this.frameDigits = [];
     this.frameData = null;
     this.frameSig = "";
+    this.anchor = null;
+    this.anchorKey = 0;
+    this.iterMul = 1;
+    this.deepFloor = 0;
+    this.deepInfo = null;
     this.applyHome(FRACTALS[0], true);
     this.renderer.uploadPalette("a", rasterize(this.stops));
     this.renderer.uploadPalette("b", rasterize(this.stops));
@@ -123,7 +134,9 @@ class Engine {
   }
 
   start() {
-    const once = new URLSearchParams(location.search).has("once");
+    const params = new URLSearchParams(location.search);
+    const once = params.has("once");
+    if (params.has("re") && params.has("im")) this.goTo(params.get("re"), params.get("im"), params.get("r") || 1);
     const loop = (now) => {
       this.frame(now);
       this.frames = (this.frames || 0) + 1;
@@ -155,6 +168,8 @@ class Engine {
   applyHome(fractal, snapPower = true) {
     const home = fractal.home;
     this.frameDigits = [];
+    this.anchor = null;
+    this.deepFloor = 0;
     this.refreshFrame(fractal);
     if (fractal.family === "ray") {
       this.yaw = home.yaw;
@@ -213,12 +228,17 @@ class Engine {
       juliaIm: this.juliaImT,
       extra: this.extraT,
       frame: this.frameDigits.slice(),
+      anchor: this.anchor,
+      deepFloor: this.deepFloor,
     });
   }
 
   restore(mem) {
     this.frameDigits = (mem.frame || []).slice();
     this.refreshFrame();
+    this.anchor = mem.anchor || null;
+    this.anchorKey += 1;
+    this.deepFloor = mem.deepFloor || 0;
     this.cx = mem.cx;
     this.cy = mem.cy;
     this.logR = mem.logR;
@@ -502,14 +522,18 @@ class Engine {
       const per = f.frame === "square" || f.formula === 14 || f.formula === 15 ? Math.log(3) : Math.log(2);
       return Math.max(3, Math.round(this.frameDigits.length + Math.log(h / (2 * this.radius)) / per + 3));
     }
+    const deep = this.deepCapable();
     let wanted = this.iterBias;
     if (this.autoIter && f.family !== "ray") {
       const base = f.home.r || 1.35;
-      const zoom = Math.max(0, Math.log2(base / Math.max(this.radius, 1e-8)));
+      const zoom = Math.max(0, Math.log2(base / Math.max(this.radius, deep ? DEEP_MIN : 1e-8)));
       wanted = f.family === "shape" ? 6 + zoom * 0.4 : 40 + zoom * 8;
+      if (this.anchor) wanted = Math.max(wanted, this.deepFloor);
+      wanted *= this.iterMul;
     }
     if (f.family === "ray") wanted = BUDGET.defaultSteps;
-    return Math.round(clamp(wanted * iterScale, f.family === "ray" ? BUDGET.minSteps : BUDGET.minIter, f.family === "ray" ? BUDGET.maxSteps : BUDGET.maxIter));
+    const cap = f.family === "ray" ? BUDGET.maxSteps : deep ? BUDGET.maxDeepIter : BUDGET.maxIter;
+    return Math.round(clamp(wanted * iterScale, f.family === "ray" ? BUDGET.minSteps : BUDGET.minIter, cap));
   }
 
   frame(now) {
@@ -550,6 +574,7 @@ class Engine {
       geometry = this.easeView(dt) || geometry;
     }
     this.renormalize();
+    this.deepSync();
     const beforePower = this.power;
     [this.power, this.vPower] = smoothDamp(this.power, this.powerT, this.vPower, this.breathe ? 0.45 : 0.35, dt);
     [this.bailout, this.vBail] = smoothDamp(this.bailout, this.bailT, this.vBail, 0.4, dt);
@@ -575,7 +600,107 @@ class Engine {
 
   minRadius() {
     if (this.fractal.frame) return 1e-280;
+    if (this.deepCapable()) return DEEP_MIN;
     return 1e-13 * Math.max(1, Math.abs(this.cx), Math.abs(this.cy));
+  }
+
+  /** Mandelbrot and Julia at power 2 can zoom past double precision. */
+  deepCapable() {
+    const f = this.fractal;
+    return f.family === "escape" && (f.formula === 0 || f.formula === 1) && Math.abs(this.power - 2) < 0.0008 && Math.abs(this.powerT - 2) < 0.0008;
+  }
+
+  /**
+   * While anchored, cx/cy (and their targets) are offsets from the BigInt
+   * anchor. The anchor absorbs the offset whenever it grows large next to
+   * the radius, so offsets keep full double precision at any depth.
+   */
+  deepSync() {
+    const want = this.deepCapable() && this.radius < (this.anchor ? DEEP_OFF : DEEP_ON);
+    if (want && !this.anchor) {
+      const bits = bitsFor(this.radius) + 32;
+      this.anchor = { x: bigFromDouble(this.cx, bits), y: bigFromDouble(this.cy, bits), bits, key: ++this.anchorKey };
+      this.shiftView(this.cx, this.cy);
+    } else if (!want && this.anchor) {
+      const [ax, ay] = this.anchorDouble();
+      this.anchor = null;
+      this.deepFloor = 0;
+      this.shiftView(-ax, -ay);
+      const floor = Math.log(this.minRadius());
+      if (this.logR < floor) {
+        this.logR = floor;
+        this.radius = Math.exp(floor);
+      }
+      this.tLogR = Math.max(this.tLogR, floor);
+    } else if (this.anchor) {
+      const need = bitsFor(this.radius) + 32;
+      const far = Math.max(Math.abs(this.cx), Math.abs(this.cy)) > this.radius * 1e4;
+      if (far || need > this.anchor.bits) {
+        const a = this.anchor;
+        const bits = Math.max(a.bits, need);
+        const x = rebits(a.x, a.bits, bits) + bigFromDouble(this.cx, bits);
+        const y = rebits(a.y, a.bits, bits) + bigFromDouble(this.cy, bits);
+        this.anchor = { x, y, bits, key: a.key };
+        this.shiftView(this.cx, this.cy);
+      }
+    }
+  }
+
+  shiftView(dx, dy) {
+    if (!dx && !dy) return;
+    this.cx -= dx;
+    this.cy -= dy;
+    this.tcx -= dx;
+    this.tcy -= dy;
+    this.renderer.shiftOrigin?.(dx, dy);
+  }
+
+  anchorDouble() {
+    const a = this.anchor;
+    return a ? [bigToDouble(a.x, a.bits), bigToDouble(a.y, a.bits)] : [0, 0];
+  }
+
+  absolute(x, y) {
+    const [ax, ay] = this.anchorDouble();
+    return [ax + x, ay + y];
+  }
+
+  relative(x, y) {
+    const [ax, ay] = this.anchorDouble();
+    return [x - ax, y - ay];
+  }
+
+  /** Jump to a location given as decimal strings, deep or not. */
+  goTo(re, im, r) {
+    const radius = clamp(Number(r) || 1, this.minRadius(), BUDGET.maxRadius);
+    this.toRoot();
+    this.anchor = null;
+    this.deepFloor = 0;
+    if (this.deepCapable() && radius < DEEP_ON) {
+      const digits = Math.max(String(re).length, String(im).length);
+      const bits = Math.max(bitsFor(radius) + 32, Math.ceil(digits * 3.33) + 16);
+      this.anchor = { x: bigFromDecimal(re, bits), y: bigFromDecimal(im, bits), bits, key: ++this.anchorKey };
+      this.cx = 0;
+      this.cy = 0;
+    } else {
+      this.cx = Number(re) || 0;
+      this.cy = Number(im) || 0;
+    }
+    this.radius = radius;
+    this.logR = Math.log(radius);
+    this.syncTargets();
+    this.dirty = true;
+    this.publish(true);
+  }
+
+  /** Decimal center with enough digits for the current zoom. */
+  centerText() {
+    const digits = Math.max(6, Math.ceil(-Math.log10(this.radius)) + 3);
+    if (!this.anchor) return [this.cx.toFixed(Math.min(digits, 17)), this.cy.toFixed(Math.min(digits, 17))];
+    const a = this.anchor;
+    const x = a.x + bigFromDouble(this.cx, a.bits);
+    const y = a.y + bigFromDouble(this.cy, a.bits);
+    return [bigToDecimal(x, a.bits, digits), bigToDecimal(y, a.bits, digits)];
   }
 
   refreshFrame(fractal = this.fractal) {
@@ -759,6 +884,7 @@ class Engine {
       camKey: ray ? this.camKey() : "",
       frame: this.frameData,
       frameKey: this.frameSig,
+      deep: this.anchor ? { ax: this.anchor.x, ay: this.anchor.y, bits: this.anchor.bits, key: this.anchor.key } : null,
       phase: this.phase,
       density: this.density,
       soft,
@@ -794,6 +920,7 @@ class Engine {
       return;
     }
     this.dirty = !!pixels?.pending;
+    if (pixels?.deepInfo) this.adaptDeep(pixels.deepInfo, iters);
     this.view = {
       texW,
       texH,
@@ -853,6 +980,27 @@ class Engine {
     if (this.renderer.label !== "SVG") {
       this.renderer.label = "SVG";
       this.publish(true);
+    }
+  }
+
+  /**
+   * Deep views need far more iterations than the zoom formula guesses, and
+   * how many depends on the spot. When the slowest escaping pixels get close
+   * to the limit, raise it; drop it again when escapes finish far below.
+   */
+  adaptDeep(info, iters) {
+    if (info.serial === this.deepInfo?.serial) return;
+    this.deepInfo = info;
+    if (!this.anchor || !this.autoIter || info.iters !== iters) return;
+    const quant = (v) => 2 ** (Math.ceil(Math.log2(Math.max(1, v)) * 4) / 4);
+    let want = info.escHi * 2;
+    if (info.unresolved > 0.002) want = Math.max(want, iters * 4);
+    if (info.escHi > iters * 0.55 || info.unresolved > 0.002 || want < iters * 0.3) {
+      const next = Math.min(BUDGET.maxDeepIter, quant(want / (this.iterMul * this.iterScale)));
+      if (Math.abs(next - this.deepFloor) > 1) {
+        this.deepFloor = next;
+        this.dirty = true;
+      }
     }
   }
 
@@ -939,8 +1087,13 @@ class Engine {
       stops: this.stops,
       gradient: cssGradient(this.stops),
       selectedStop: this.selectedStop,
-      cx: this.cx,
-      cy: this.cy,
+      cx: this.absolute(this.cx, this.cy)[0],
+      cy: this.absolute(this.cx, this.cy)[1],
+      deep: !!this.anchor,
+      center: this.anchor ? this.centerText() : null,
+      iterMul: this.iterMul,
+      maxIter: this.deepCapable() ? BUDGET.maxDeepIter : BUDGET.maxIter,
+      deepInfo: this.deepInfo,
       radius: this.radius,
       frameDepth: this.frameDigits.length,
       zoomLog10: this.zoomLog10(),
@@ -1087,8 +1240,10 @@ class Engine {
   }
 
   bumpIter(delta) {
+    if (this.autoIter) this.iterBias = this.effectiveIters();
     this.autoIter = false;
-    this.iterBias = clamp(this.iterBias + delta, BUDGET.minIter, BUDGET.maxIter);
+    const cap = this.deepCapable() ? BUDGET.maxDeepIter : BUDGET.maxIter;
+    this.iterBias = Math.round(clamp(this.iterBias * Math.exp(delta / 80), BUDGET.minIter, cap));
     this.dirty = true;
     this.publish(true);
   }
@@ -1200,7 +1355,13 @@ class Engine {
 
   setIterBias(value) {
     this.autoIter = false;
-    this.iterBias = clamp(value, BUDGET.minIter, BUDGET.maxIter);
+    this.iterBias = Math.round(clamp(value, BUDGET.minIter, this.deepCapable() ? BUDGET.maxDeepIter : BUDGET.maxIter));
+    this.dirty = true;
+    this.publish(true);
+  }
+
+  setIterMul(value) {
+    this.iterMul = clamp(value, 0.25, 8);
     this.dirty = true;
     this.publish(true);
   }
@@ -1230,8 +1391,7 @@ class Engine {
       this.pitchT = home.pitch;
       this.eyeT = orbitEye(this.yawT, home.pitch, home.dist);
     } else {
-      this.tcx = home.x;
-      this.tcy = home.y;
+      [this.tcx, this.tcy] = this.relative(home.x, home.y);
       this.tLogR = Math.log(home.r);
       this.tRot = 0;
     }
@@ -1248,8 +1408,7 @@ class Engine {
     const spot = presets[this.presetCursor];
     this.ease = 0.95;
     if (spot.x !== undefined) {
-      this.tcx = spot.x;
-      this.tcy = spot.y;
+      [this.tcx, this.tcy] = this.relative(spot.x, spot.y);
       this.tLogR = Math.log(spot.r);
     }
     if (spot.julia) {
@@ -1262,8 +1421,7 @@ class Engine {
     const julia = FRACTALS.findIndex((item) => item.id === "julia");
     if (this.fractal.id === "julia") this.setFractal(0);
     else {
-      const re = this.cx;
-      const im = this.cy;
+      const [re, im] = this.absolute(this.cx, this.cy);
       this.setFractal(julia);
       this.juliaRe = re;
       this.juliaIm = im;
@@ -1348,11 +1506,12 @@ class Engine {
     const julia = FRACTALS.findIndex((item) => item.id === "julia");
     if (this.fractal.family === "escape" && this.fractal.id !== "julia") {
       const world = this.screenToWorld(event.offsetX, event.offsetY);
+      const [re, im] = this.absolute(world.x, world.y);
       this.setFractal(julia);
-      this.juliaRe = world.x;
-      this.juliaIm = world.y;
-      this.juliaReT = world.x;
-      this.juliaImT = world.y;
+      this.juliaRe = re;
+      this.juliaIm = im;
+      this.juliaReT = re;
+      this.juliaImT = im;
     }
   }
 

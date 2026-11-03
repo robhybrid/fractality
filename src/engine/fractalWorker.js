@@ -1,8 +1,18 @@
 import { refineRows } from "./antialias.js";
+import { dropOrbit, putOrbit } from "./deep.js";
 import { demSupported, refineDistanceRows } from "./distance.js";
 import { createBuffer, fillRows, shadeLevels } from "./kernel.js";
 
 self.onmessage = (event) => {
+  if (event.data.orbit) {
+    const { id, Z, N } = event.data.orbit;
+    putOrbit(id, Z, N);
+    return;
+  }
+  if (event.data.drop) {
+    dropOrbit(event.data.drop);
+    return;
+  }
   const { gen, y0, y1, state, base } = event.data;
   if (base?.dist && state.dem && demSupported(state)) {
     const r = refineDistanceRows(state, base, y0, y1);
