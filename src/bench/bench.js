@@ -56,8 +56,16 @@ async function runAll() {
     { tag: "seahorse 1e-7, 1200 iter (perturbation on GPU)", cx: -0.743643887037151, cy: 0.13182590420533, radius: 1e-7, iters: 1200, skipInterior: true, perturb: true },
   ];
   const gl = createGpuEscape();
-  const gpu = await createWebGpuEscape();
-  log(`WebGL1 kernel: ${gl ? `ok (float textures ${gl.floatTex})` : "unavailable"}; WebGPU: ${gpu ? "ok" : "unavailable"}`);
+  const gpus = [];
+  for (const powerPreference of ["low-power", "high-performance"]) {
+    const g = await createWebGpuEscape({ powerPreference });
+    if (g && !gpus.some((o) => o.adapterName === g.adapterName)) gpus.push(g);
+    else g?.destroy();
+  }
+  const probe = document.createElement("canvas").getContext("webgl");
+  const dbg = probe?.getExtension("WEBGL_debug_renderer_info");
+  log(`WebGL renderer: ${dbg ? probe.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "?"}`);
+  log(`WebGL1 kernel: ${gl ? `ok (float textures ${gl.floatTex})` : "unavailable"}; WebGPU: ${gpus.length ? gpus.map((g) => g.adapterName || "adapter").join(" | ") : "unavailable"}`);
   for (const v of views) {
     const state = { family: "escape", formula: 0, rotation: 0, power: 2, bailout: 4, juliaRe: 0, juliaIm: 0, extra: 0, w: W, h: H, ...v };
     log(`\n${v.tag}`);
@@ -80,15 +88,16 @@ async function runAll() {
       while (!gl.step(job));
       log(`  WebGL1 6ms tiles  ${(performance.now() - t0).toFixed(0)} ms back-to-back, ${job.tiles} tiles, slowest probe ${job.gpuMs.toFixed(1)} ms`);
     }
-    if (gpu) {
+    for (const gpu of gpus) {
       await gpu.fill(createBuffer(64, 40), { ...state, w: 64, h: 40 }, { orbit, eager: true });
       const buf = createBuffer(W, H);
       t0 = performance.now();
       const r = await gpu.fill(buf, state, { orbit, eager: true, budgetMs: 1e9 });
-      log(`  WebGPU            ${(performance.now() - t0).toFixed(0)} ms incl. readback (slowest dispatch ${r.worstMs.toFixed(1)} ms), ${mismatch(ref, buf)}`);
+      log(`  WebGPU ${gpu.adapterName.slice(0, 28).padEnd(28)} ${(performance.now() - t0).toFixed(0)} ms incl. readback (slowest dispatch ${r.worstMs.toFixed(1)} ms), ${mismatch(ref, buf)}`);
     }
   }
   log("\ndone");
+  window.__benchDone = true;
 }
 
 document.getElementById("run").addEventListener("click", () => runAll().catch((e) => log(String(e?.stack || e))));

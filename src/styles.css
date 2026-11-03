@@ -54,8 +54,7 @@ button { cursor: pointer; }
   padding: 16px 16px 20px;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: var(--panel);
-  backdrop-filter: blur(18px) saturate(1.2);
+  background: rgba(10, 12, 18, 0.9);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
   color: var(--ink);
 }

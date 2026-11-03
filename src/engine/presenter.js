@@ -105,6 +105,7 @@ export class Presenter {
     this.lastJobSig = "";
     this.motionShare = 0.3;
     this.deepShare = 0.1;
+    this.gpuShare = 0.5;
     this.gpu = null;
     this.gpuState = "idle";
     this.glp = null;
@@ -159,7 +160,8 @@ export class Presenter {
     else if (state.family === "ifs") cap = BUDGET.maxPixelsIfs;
     const full = Math.min(W * H, cap) * quality;
     let area = full;
-    if (state.soft) area = full * (state.deep ? this.deepShare : this.motionShare);
+    if (state.soft && this.wgpu && !this.wgpuBusy && this.wgpuEligible({ ...state, h: H })) area = full * this.gpuShare;
+    else if (state.soft) area = full * (state.deep ? this.deepShare : this.motionShare);
     else if (!this.settled && !state.deep && full > BUDGET.settlePixels * 1.5) area = BUDGET.settlePixels * quality;
     return fitSize(W, H, Math.max(64 * 36, area));
   }
@@ -213,6 +215,7 @@ export class Presenter {
         this.disableGpu();
       }
     }
+    if (job.soft && !job.still && this.wgpu && !this.wgpuBusy && this.wgpuEligible(job.state) && this.runWebGpu(job)) return;
     const plan = this.tiles ? this.tiles.plan(this.tiles.gpu, job.state, h) : null;
     if (plan) {
       try {
@@ -389,6 +392,8 @@ export class Presenter {
     }
     if (job.aa) {
       this.aaMs = ms;
+    } else if (job.gpu) {
+      /* GPU frames adapt gpuShare in runWebGpu */
     } else if (job.soft && job.state.deep) {
       this.deepShare = Math.max(0.01, Math.min(0.5, this.deepShare * Math.max(0.5, Math.min(1.15, 60 / Math.max(1, ms)))));
     } else if (job.soft) {
@@ -663,6 +668,7 @@ export class Presenter {
     if (this.gpuState === "idle") this.armGpu();
     if (this.glpState === "idle") this.armGlPresent();
     if (this.tilesState === undefined) this.armTiles();
+    if (this.wgpuState === undefined) this.armWebGpu();
     const result = {
       pending: !!this.job,
       viewW: this.shown?.buf.w || 0,
@@ -814,6 +820,115 @@ export class Presenter {
     this.tileStats = { ms: performance.now() - job.started, tiles: job.tiles.tiles, maxTileMs: job.tiles.gpuMs, rate: gpu.rate, pixels: job.buf.w * job.buf.h, iters: job.tiles.iters, perturb: !!job.tiles.orbit };
     shadeLevels(job.buf);
     this.finish(job);
+  }
+
+  /**
+   * Motion frames for the escape formulas on WebGPU (the discrete GPU when
+   * there is one). 32-bit floats are fine for a frame shown for a moment;
+   * settled frames stay on the exact 64-bit CPU path. Below ~2e-6 per pixel
+   * only Mandelbrot runs here, as f32 perturbation from a 64-bit or BigInt
+   * reference orbit, down to radius 1e-28 before f32 deltas underflow.
+   */
+  wgpuEligible(s) {
+    if (s.family !== "escape" || (s.formula | 0) >= 8 || s.dem) return false;
+    const px = (2 * s.radius) / Math.max(1, s.h);
+    if (!s.deep && px > 2e-6) return true;
+    if ((s.formula | 0) !== 0 || Math.abs((s.power || 2) - 2) > 1e-3) return false;
+    if (s.deep) return !!this.deepRef?.orbit(s.deep.id) && s.radius > 1e-28;
+    return true;
+  }
+
+  wgpuOrbit(s) {
+    const px = (2 * s.radius) / Math.max(1, s.h);
+    if (s.deep) {
+      const orbit = this.deepRef.orbit(s.deep.id);
+      return { Z: orbit.Z, N: orbit.N, ox: s.cx + s.deep.ox, oy: s.cy + s.deep.oy };
+    }
+    if (px > 2e-6) return null;
+    return this.wgpuPick(s, s.iters);
+  }
+
+  /** Starts the GPU fill; false leaves the job to the CPU workers. */
+  runWebGpu(job) {
+    const gpu = this.wgpu;
+    let orbit;
+    try {
+      orbit = this.wgpuOrbit(job.state);
+    } catch {
+      return false;
+    }
+    this.wgpuBusy = true;
+    job.kind = "webgpu";
+    this.label = gpu.label;
+    gpu
+      .fill(job.buf, job.state, { orbit })
+      .then(() => {
+        this.wgpuBusy = false;
+        if (this.job !== job) return;
+        // The GPU round trip includes driver latency, so aim for a fresh frame every ~120 ms rather than per display frame.
+        const ms = performance.now() - job.started;
+        if (ms > 160) this.gpuShare = Math.max(0.08, this.gpuShare * 0.8);
+        else if (ms < 90) this.gpuShare = Math.min(1, this.gpuShare * 1.15);
+        job.gpu = true;
+        shadeLevels(job.buf);
+        this.finish(job);
+      })
+      .catch(() => {
+        this.wgpuBusy = false;
+        this.dropWebGpu();
+        if (this.job === job) {
+          this.job = null;
+          this.lastJobSig = "";
+        }
+      });
+    return true;
+  }
+
+  dropWebGpu() {
+    try {
+      this.wgpu?.destroy();
+    } catch {
+      /* already gone */
+    }
+    this.wgpu = null;
+    this.wgpuState = "failed";
+    this.label = this.cpuLabel();
+  }
+
+  /** On unless ?webgpu=0; checked against the CPU on a small frame first. */
+  armWebGpu() {
+    this.wgpuState = "off";
+    if (this.dead || new URLSearchParams(location.search).get("webgpu") === "0" || typeof navigator === "undefined" || !navigator.gpu) return;
+    this.wgpuState = "pending";
+    Promise.all([import("./webgpu.js"), import("./gpuescape.js")])
+      .then(async ([wg, ge]) => {
+        const gpu = await wg.createWebGpuEscape({ powerPreference: "high-performance" });
+        if (this.dead || !gpu) {
+          gpu?.destroy();
+          this.wgpuState = "failed";
+          return;
+        }
+        const probe = { family: "escape", formula: 0, cx: -0.75, cy: 0, radius: 1.35, rotation: 0, power: 2, bailout: 64, iters: 64, skipInterior: true, w: 64, h: 40 };
+        const cpu = createBuffer(64, 40);
+        fillAll(cpu, probe);
+        const out = createBuffer(64, 40);
+        await gpu.fill(out, probe, { eager: true });
+        let bad = 0;
+        for (let i = 0; i < cpu.alpha.length; i += 1) if (cpu.alpha[i] !== out.alpha[i]) bad += 1;
+        if (bad > cpu.alpha.length * 0.02) {
+          gpu.destroy();
+          this.wgpuState = "failed";
+          return;
+        }
+        const name = gpu.adapterName.toLowerCase();
+        gpu.label = `WebGPU${name.includes("amd") ? " AMD" : name.includes("nvidia") ? " NVIDIA" : name.includes("intel") ? " Intel" : name.includes("apple") ? " Apple" : ""}`;
+        this.wgpu = gpu;
+        this.wgpuPick = ge.pickReference;
+        this.wgpuState = "ready";
+      })
+      .catch(() => {
+        this.wgpuState = "failed";
+      });
   }
 
   /** Opt-in (?gpu=tiles): tiled WebGL1 escape fill, including perturbation. */
@@ -1029,6 +1144,7 @@ export class Presenter {
     this.dropGlPresent();
     this.tiles?.gpu.destroy();
     this.tiles = null;
+    this.dropWebGpu();
     this.deepRef?.destroy();
     for (const worker of this.workers) worker.terminate();
     this.workers = [];

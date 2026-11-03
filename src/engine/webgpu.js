@@ -65,7 +65,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let x = gid.x;
   let y = gid.y + P.row0;
   if (x >= w || y >= h) { return; }
-  let idx = (y - P.row0) * w + x;
+  let idx = y * w + x;
   let ndc = vec2f(((f32(x) + 0.5) / P.size.x) * 2.0 - 1.0, 1.0 - ((f32(y) + 0.5) / P.size.y) * 2.0);
   var p = vec2f(ndc.x * (P.size.x / P.size.y), ndc.y) * P.radius;
   p = vec2f(p.x * P.rot.x - p.y * P.rot.y, p.x * P.rot.y + p.y * P.rot.x);
@@ -126,12 +126,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-export async function createWebGpuEscape() {
+export async function createWebGpuEscape({ powerPreference = "low-power" } = {}) {
   if (typeof navigator === "undefined" || !navigator.gpu) return null;
   let device;
+  let adapterName = "";
   try {
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "low-power" });
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference });
     if (!adapter) return null;
+    const info = adapter.info || (await adapter.requestAdapterInfo?.()) || {};
+    adapterName = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(" ");
     device = await adapter.requestDevice();
   } catch {
     return null;
@@ -179,86 +182,92 @@ export async function createWebGpuEscape() {
     orbitN = orbit.N;
   }
 
-  /** One band of rows, awaited; returns GPU+readback wall time. */
-  async function band(buf, state, orbit, row0, rows) {
-    const w = buf.w;
-    const bytes = w * rows * 8;
-    ensure(bytes);
+  function params(buf, state, orbit, row0) {
     const f = new Float32Array(20);
     const u = new Uint32Array(f.buffer);
     const rot = state.rotation || 0;
-    f.set([w, buf.h, state.cx, state.cy, Math.cos(rot), Math.sin(rot), orbit?.ox || 0, orbit?.oy || 0, state.juliaRe || 0, state.juliaIm || 0, state.radius, state.power || 2, state.bailout || 4, state.extra || 0]);
+    f.set([buf.w, buf.h, state.cx, state.cy, Math.cos(rot), Math.sin(rot), orbit?.ox || 0, orbit?.oy || 0, state.juliaRe || 0, state.juliaIm || 0, state.radius, state.power || 2, state.bailout || 4, state.extra || 0]);
     u[14] = Math.max(1, state.iters | 0);
     u[15] = state.formula | 0;
     u[16] = state.skipInterior ? 1 : 0;
     u[17] = orbit ? 1 : 0;
     u[18] = orbitN;
     u[19] = row0;
+    return f;
+  }
+
+  /**
+   * The whole frame in one submission: bands of rows, each its own dispatch
+   * so no single GPU command runs long, then one readback. Waiting on the
+   * GPU per band costs a round trip each (100+ ms on some drivers).
+   */
+  async function frame(buf, state, orbit, budgetOps) {
+    const { w, h } = buf;
+    const bytes = w * h * 8;
+    ensure(bytes);
     if (orbit) setOrbit(orbit);
-    device.queue.writeBuffer(uniform, 0, f);
-    const group = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: { buffer: orbitBuf } },
-        { binding: 2, resource: { buffer: outBuf, size: bytes } },
-      ],
-    });
+    const iters = Math.max(1, state.iters | 0);
+    const rows = Math.max(8, Math.min(h, Math.floor(budgetOps / (w * iters)) & ~7));
     const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, group);
-    pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(rows / 8));
-    pass.end();
+    const uniforms = [];
+    let bands = 0;
+    for (let y = 0; y < h; y += rows) {
+      const n = Math.min(rows, h - y);
+      const ub = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(ub, 0, params(buf, state, orbit, y));
+      uniforms.push(ub);
+      const group = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: ub } },
+          { binding: 1, resource: { buffer: orbitBuf } },
+          { binding: 2, resource: { buffer: outBuf, size: bytes } },
+        ],
+      });
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group);
+      pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(n / 8));
+      pass.end();
+      bands += 1;
+    }
     enc.copyBufferToBuffer(outBuf, 0, readBuf, 0, bytes);
     const t0 = performance.now();
     device.queue.submit([enc.finish()]);
     await readBuf.mapAsync(GPUMapMode.READ, 0, bytes);
     const ms = performance.now() - t0;
-    const data = new Float32Array(readBuf.getMappedRange(0, bytes).slice(0));
-    readBuf.unmap();
-    const off = row0 * w;
-    for (let i = 0; i < w * rows; i += 1) {
+    const data = new Float32Array(readBuf.getMappedRange(0, bytes));
+    const { iter, extra, alpha } = buf;
+    for (let i = 0; i < w * h; i += 1) {
       const it = data[2 * i];
-      const o = off + i;
       if (it < 0) {
-        buf.alpha[o] = 0;
-        buf.iter[o] = 0;
-        buf.extra[o] = 0;
+        alpha[i] = 0;
+        iter[i] = 0;
+        extra[i] = 0;
       } else {
-        buf.alpha[o] = 1;
-        buf.iter[o] = it;
-        buf.extra[o] = data[2 * i + 1];
+        alpha[i] = 1;
+        iter[i] = it;
+        extra[i] = data[2 * i + 1];
       }
     }
-    return ms;
+    readBuf.unmap();
+    for (const ub of uniforms) ub.destroy();
+    return { ms, bands };
   }
 
   return {
+    adapterName,
     get lost() {
       return lost;
     },
     /**
-     * Fills buf in bands sized so each dispatch stays near budgetMs, one band
-     * per animation frame unless `eager`. orbit: { Z, N, ox, oy } enables
-     * perturbation.
+     * Fills buf; orbit { Z, N, ox, oy } enables perturbation. budgetOps caps
+     * pixel-iterations per dispatch (about 1-3 ms each on a mid-range GPU).
      */
-    async fill(buf, state, { orbit = null, budgetMs = 6, eager = false } = {}) {
+    async fill(buf, state, { orbit = null, budgetOps = 2e8 } = {}) {
       buf.source = 0;
-      let rows = 8;
-      let worst = 0;
-      let total = 0;
-      for (let y = 0; y < buf.h; ) {
-        const n = Math.min(rows, buf.h - y);
-        const ms = await band(buf, state, orbit, y, n);
-        worst = Math.max(worst, ms);
-        total += ms;
-        y += n;
-        const perRow = ms / n;
-        rows = Math.max(8, Math.min(buf.h, Math.floor(budgetMs / Math.max(perRow, 1e-3)) & ~7));
-        if (!eager) await new Promise((r) => requestAnimationFrame(r));
-      }
-      return { worstMs: worst, gpuMs: total };
+      const r = await frame(buf, state, orbit, budgetOps);
+      return { worstMs: r.ms, gpuMs: r.ms, bands: r.bands };
     },
     destroy() {
       device.destroy();
