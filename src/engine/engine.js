@@ -92,6 +92,8 @@ class Engine {
     this.anchorKey = 0;
     this.iterMul = 1;
     this.deepFloor = 0;
+    this.floorDepth = 0;
+    this.nextFloor = 0;
     this.deepInfo = null;
     this.applyHome(FRACTALS[0], true);
     this.renderer.uploadPalette("a", rasterize(this.stops));
@@ -170,6 +172,8 @@ class Engine {
     this.frameDigits = [];
     this.anchor = null;
     this.deepFloor = 0;
+    this.floorDepth = 0;
+    this.nextFloor = 0;
     this.refreshFrame(fractal);
     if (fractal.family === "ray") {
       this.yaw = home.yaw;
@@ -528,7 +532,13 @@ class Engine {
       const base = f.home.r || 1.35;
       const zoom = Math.max(0, Math.log2(base / Math.max(this.radius, deep ? DEEP_MIN : 1e-8)));
       wanted = f.family === "shape" ? 6 + zoom * 0.4 : 40 + zoom * 8;
-      if (this.anchor) wanted = Math.max(wanted, this.deepFloor);
+      if (this.anchor) {
+        // A floor learned at some depth keeps growing in step with the zoom past it.
+        const grow = this.floorDepth > 0 && zoom > this.floorDepth ? zoom / this.floorDepth : 1;
+        wanted = Math.max(wanted, this.deepFloor * grow);
+        // Steps of ~9%, so a deep frame in progress is not restarted for a one-iteration change every display frame.
+        wanted = 2 ** (Math.round(Math.log2(Math.max(1, wanted)) * 8) / 8);
+      }
       wanted *= this.iterMul;
     }
     if (f.family === "ray") wanted = BUDGET.defaultSteps;
@@ -589,7 +599,12 @@ class Engine {
     if (Math.abs(this.extra - this.extraT) > 0.001 && Math.abs(this.vExtra) > 0.0001) geometry = true;
     if (geometry) this.dirty = true;
     const soft = playing || holding || Math.abs(this.zoomRate) > 0.02 || this.breathe || this.moving();
+    if (soft && !this.wasSoft && this.nextFloor && this.anchor) {
+      this.deepFloor = Math.max(this.deepFloor, Math.min(BUDGET.maxDeepIter, this.nextFloor));
+      this.floorDepth = this.zoomOctaves();
+    }
     if (soft !== this.wasSoft) {
+      this.nextFloor = 0;
       this.dirty = true;
       this.wasSoft = soft;
     }
@@ -625,6 +640,8 @@ class Engine {
       const [ax, ay] = this.anchorDouble();
       this.anchor = null;
       this.deepFloor = 0;
+      this.floorDepth = 0;
+      this.nextFloor = 0;
         this.shiftView(-ax, -ay);
       const floor = Math.log(this.minRadius());
       if (this.logR < floor) {
@@ -676,6 +693,8 @@ class Engine {
     this.toRoot();
     this.anchor = null;
     this.deepFloor = 0;
+    this.floorDepth = 0;
+    this.nextFloor = 0;
     if (this.deepCapable() && radius < DEEP_ON) {
       const digits = Math.max(String(re).length, String(im).length);
       const bits = Math.max(bitsFor(radius) + 32, Math.ceil(digits * 3.33) + 16);
@@ -989,19 +1008,39 @@ class Engine {
    * how many depends on the spot. When the slowest escaping pixels get close
    * to the limit, raise it; drop it again when escapes finish far below.
    */
+  zoomOctaves() {
+    return Math.max(1, Math.log2((this.fractal.home.r || 1.35) / this.radius));
+  }
+
+  /**
+   * Deep views need far more iterations than the zoom formula guesses, and
+   * how many depends on the spot. Moving frames raise the limit when escapes
+   * reach near it, or when most of the view is still undecided while escapes
+   * are happening (bounded, so a view full of interior cannot run away).
+   * Settled frames are carried further by continuation passes; what they
+   * learn becomes the starting limit the next time the view moves.
+   */
   adaptDeep(info, iters) {
     if (info.serial === this.deepInfo?.serial) return;
     this.deepInfo = info;
-    if (!this.anchor || !this.autoIter || info.iters !== iters) return;
-    // Pixels that hit the limit are carried further by continuation passes in
-    // the presenter; the base limit only follows where escapes are happening.
+    if (!this.anchor || !this.autoIter) return;
     const quant = (v) => 2 ** (Math.ceil(Math.log2(Math.max(1, v)) * 4) / 4);
+    const scale = this.iterMul * this.iterScale;
+    if (info.contEscHi) {
+      if (info.contEscHi * 1.25 > iters) this.nextFloor = quant((info.contEscHi * 1.25) / scale);
+      return;
+    }
+    if (info.iters !== iters) return;
+    const depth = this.zoomOctaves();
     let want = iters;
     if (info.escHi > iters * 0.55) want = Math.min(info.escHi * 2, iters * 2);
+    else if (info.unresolved > 0.2) want = iters * 1.3;
     else if (info.escHi * 2.5 < iters * 0.6 && info.unresolved < 0.002) want = Math.max(info.escHi * 2.5, BUDGET.minIter);
-    const next = Math.min(BUDGET.maxDeepIter, quant(want / (this.iterMul * this.iterScale)));
+    const cap = Math.max((40 + depth * 8) * 8, this.deepFloor);
+    const next = Math.min(BUDGET.maxDeepIter, cap, quant(want / scale));
     if (Math.abs(next - this.deepFloor) > 1 && Math.abs(want - iters) > iters * 0.1) {
       this.deepFloor = next;
+      this.floorDepth = depth;
       this.dirty = true;
     }
   }

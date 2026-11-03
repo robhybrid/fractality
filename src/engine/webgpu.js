@@ -70,7 +70,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var p = vec2f(ndc.x * (P.size.x / P.size.y), ndc.y) * P.radius;
   p = vec2f(p.x * P.rot.x - p.y * P.rot.y, p.x * P.rot.y + p.y * P.rot.x);
   let bail = max(P.bail, 4.0);
-  outBuf[idx] = vec2f(-1.0, 0.0);
+  outBuf[idx] = vec2f(-1.0, 1.0);
   if (P.perturb == 1u) {
     let dc = p + P.offset;
     var d = vec2f(0.0);
@@ -100,7 +100,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var z = select(vec2f(0.0), p, julia);
   var prev = vec2f(0.0);
   let power = max(P.power, 0.35);
-  if (P.formula == 0u && P.skip == 1u && abs(power - 2.0) < 0.02 && cardioid(cc)) { return; }
+  if (P.formula == 0u && P.skip == 1u && abs(power - 2.0) < 0.02 && cardioid(cc)) {
+    outBuf[idx] = vec2f(-1.0, 0.0);
+    return;
+  }
   var check = z;
   for (var i = 0u; i < P.maxIter; i++) {
     var base = z;
@@ -119,7 +122,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       return;
     }
     if (P.formula == 0u && P.skip == 1u && i > 24u && (i & 15u) == 0u) {
-      if (dot(z - check, z - check) < 1e-9) { return; }
+      if (dot(z - check, z - check) < 1e-9) {
+        outBuf[idx] = vec2f(-1.0, 0.0);
+        return;
+      }
       check = z;
     }
   }
@@ -243,7 +249,7 @@ export async function createWebGpuEscape({ powerPreference = "low-power" } = {})
       if (it < 0) {
         alpha[i] = 0;
         iter[i] = 0;
-        extra[i] = 0;
+        extra[i] = data[2 * i + 1];
       } else {
         alpha[i] = 1;
         iter[i] = it;

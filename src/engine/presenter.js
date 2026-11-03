@@ -71,6 +71,24 @@ function gpuAgrees(gpu) {
   return Math.abs(cpuIn - gpuIn) <= cpuIn * 0.4;
 }
 
+/** The iteration count that 99.5% of escaping pixels escape by. */
+function escapeLimit(buf, iters) {
+  const { iter, alpha } = buf;
+  const bins = new Uint32Array(1024);
+  const k = 1023 / Math.max(1, iters);
+  let escapes = 0;
+  for (let i = 0; i < iter.length; i += 1) {
+    if (!alpha[i]) continue;
+    bins[Math.min(1023, (iter[i] * k) | 0)] += 1;
+    escapes += 1;
+  }
+  for (let b = 0, seen = 0; b < 1024 && escapes; b += 1) {
+    seen += bins[b];
+    if (seen >= escapes * 0.995) return (b + 1) / k;
+  }
+  return 0;
+}
+
 function workerCount() {
   const cores = navigator.hardwareConcurrency || 4;
   return Math.max(1, Math.min(6, Math.floor(cores / 2)));
@@ -464,13 +482,14 @@ export class Presenter {
     shadeLevels(job.buf);
     job.buf.cont = job.rest;
     const left = job.rest.reduce((sum, c) => sum + c.idx.length, 0);
-    const weak = job.resolved < Math.max(8, job.pending * 0.004);
+    const weak = job.resolved < Math.max(64, job.pending * 0.01);
     this.job = null;
     this.show(job.buf, job.view, job.ident, job.sig, job.state);
     this.shown.contIters = job.state.iters;
     this.shown.contWeak = weak ? job.weak + 1 : 0;
     this.shown.contDone = left === 0 || this.shown.contWeak >= 2 || job.state.iters >= BUDGET.maxContIter;
     this.contMs = ms;
+    this.deepInfo = { ...(this.deepInfo || {}), serial: (this.deepInfo?.serial || 0) + 1, contEscHi: escapeLimit(job.buf, job.state.iters) };
   }
 
   /** Adds the reference orbit to a deep state, or returns null until one is ready. */
@@ -638,7 +657,8 @@ export class Presenter {
       return { pending: true, viewW: this.shown?.buf.w || 0, viewH: this.shown?.buf.h || 0, flip: false, deepInfo: this.deepInfo };
     }
     if (state.soft) this.settled = false;
-    if (this.job && ((state.soft && !this.job.soft) || (state.deep && !this.job.cont && this.job.state.iters !== state.iters))) {
+    const iterJump = this.job && state.deep && !this.job.cont && this.job.state.iters !== state.iters && (!this.job.soft || Math.abs(this.job.state.iters - state.iters) > this.job.state.iters * 0.25);
+    if (this.job && ((state.soft && !this.job.soft) || iterJump)) {
       this.job = null;
       this.gen += 1;
       this.lastJobSig = "";
@@ -650,6 +670,11 @@ export class Presenter {
       if (step * 3 < w * h) [w, h] = fitSize(w, h, step);
     }
     const sig = `${paramKey(state)}|${geomKey(state)}|${w}x${h}`;
+    // A GPU frame that is slow to come back (the GPU waking from idle can take a second) must not hold up motion.
+    if (this.job?.kind === "webgpu" && performance.now() - this.job.started > 300) {
+      this.job = null;
+      this.lastJobSig = "";
+    }
     if ((this.job?.aa || this.job?.cont) && sig !== this.job.sig) {
       this.job = null;
       this.gen += 1;
@@ -865,10 +890,10 @@ export class Presenter {
       .then(() => {
         this.wgpuBusy = false;
         if (this.job !== job) return;
-        // The GPU round trip includes driver latency, so aim for a fresh frame every ~120 ms rather than per display frame.
+        // The GPU round trip includes ~100 ms of driver latency, so aim for a fresh frame every ~150-200 ms rather than per display frame.
         const ms = performance.now() - job.started;
-        if (ms > 160) this.gpuShare = Math.max(0.08, this.gpuShare * 0.8);
-        else if (ms < 90) this.gpuShare = Math.min(1, this.gpuShare * 1.15);
+        if (ms > 230) this.gpuShare = Math.max(0.08, this.gpuShare * 0.8);
+        else if (ms < 150) this.gpuShare = Math.min(1, this.gpuShare * 1.15);
         job.gpu = true;
         shadeLevels(job.buf);
         this.finish(job);
@@ -895,14 +920,18 @@ export class Presenter {
     this.label = this.cpuLabel();
   }
 
-  /** On unless ?webgpu=0; checked against the CPU on a small frame first. */
+  /** On unless ?webgpu=0 (?webgpu=high picks the discrete GPU); checked against the CPU on a small frame first. */
   armWebGpu() {
     this.wgpuState = "off";
-    if (this.dead || new URLSearchParams(location.search).get("webgpu") === "0" || typeof navigator === "undefined" || !navigator.gpu) return;
+    const pick = new URLSearchParams(location.search).get("webgpu");
+    if (this.dead || pick === "0" || typeof navigator === "undefined" || !navigator.gpu) return;
     this.wgpuState = "pending";
     Promise.all([import("./webgpu.js"), import("./gpuescape.js")])
       .then(async ([wg, ge]) => {
-        const gpu = await wg.createWebGpuEscape({ powerPreference: "high-performance" });
+        // The integrated GPU by default: it also drives the display, so it never
+        // sleeps. A discrete GPU that powers down after a few idle seconds stalls
+        // Chrome's whole GPU process (and the animation) for ~1 s on wake.
+        const gpu = await wg.createWebGpuEscape({ powerPreference: pick === "high" ? "high-performance" : "low-power" });
         if (this.dead || !gpu) {
           gpu?.destroy();
           this.wgpuState = "failed";
