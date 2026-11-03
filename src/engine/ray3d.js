@@ -35,7 +35,7 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 `;
 
 const MARCH = /* wgsl */ `
-fn bulb(p: vec3f, c: vec3f) -> f32 {
+fn bulb(p: vec3f, c: vec3f, grow: f32) -> f32 {
   var z = p;
   var dr = 1.0;
   var r = 0.0;
@@ -47,7 +47,7 @@ fn bulb(p: vec3f, c: vec3f) -> f32 {
       let theta = acos(clamp(z.z / r, -1.0, 1.0)) * pw;
       let phi = atan2(z.y, z.x) * pw;
       let rp = pow(r, pw - 1.0);
-      dr = rp * pw * dr + 1.0;
+      dr = rp * pw * dr + grow;
       let zr = rp * r;
       z = zr * vec3f(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c;
     }
@@ -113,8 +113,8 @@ fn quat(p: vec3f) -> f32 {
   var r2 = 0.0;
   for (var i = 0u; i < P.iters; i++) {
     r2 = dot(q, q);
-    if (r2 > 8.0) { break; }
-    dr = 2.0 * sqrt(r2) * dr + 1.0;
+    if (r2 > 1e4) { break; }
+    dr = 2.0 * sqrt(r2) * dr;
     q = vec4f(q.x * q.x - q.y * q.y - q.z * q.z - q.w * q.w + P.julia.x, 2.0 * q.x * q.y + P.julia.y, 2.0 * q.x * q.z + P.julia.z, 2.0 * q.x * q.w);
   }
   let r = sqrt(max(r2, 1e-8));
@@ -123,15 +123,15 @@ fn quat(p: vec3f) -> f32 {
 
 fn scene(p: vec3f) -> f32 {
   switch P.shape {
-    case 0u: { return bulb(p, p); }
+    case 0u: { return bulb(p, p, 1.0); }
     case 1u: { return mbox(p); }
     case 2u: { return menger(p); }
     case 3u: { return tetra(p); }
-    case 4u: { return bulb(p, P.julia); }
+    case 4u: { return bulb(p, P.julia, 0.0); }
     case 5u: { return quat(p); }
     default: {
       let t = clamp(P.julia.z, 0.0, 1.0);
-      return bulb(p, vec3f(p.x + (P.julia.x - p.x) * t, p.y + (P.julia.y - p.y) * t, p.z * (1.0 - t)));
+      return bulb(p, vec3f(p.x + (P.julia.x - p.x) * t, p.y + (P.julia.y - p.y) * t, p.z * (1.0 - t)), 1.0 - t);
     }
   }
 }

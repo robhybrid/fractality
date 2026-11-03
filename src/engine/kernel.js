@@ -783,7 +783,7 @@ function fillIfs(buf, state) {
 }
 
 export const RAY_FOCAL = 1.35;
-export const RAY_ITER_CAP = [12, 18, 12, 24, 12, 16, 12];
+export const RAY_ITER_CAP = [12, 18, 12, 24, 12, 24, 12];
 
 /** Radius of a sphere that holds every visible part of each 3D formula. */
 export function sceneRadius(shape, power) {
@@ -973,21 +973,24 @@ function shadeHit(buf, idx, mode, de, px, py, pz, dx, dy, dz, t, eps, march, L, 
 }
 
 export function mapScene(x, y, z, shape, power, iters, jx = 0, jy = 0, jz = 0) {
-  if (shape === 0) return mapBulb(x, y, z, power, iters, x, y, z);
+  if (shape === 0) return mapBulb(x, y, z, power, iters, x, y, z, 1);
   if (shape === 1) return mapBox(x, y, z, power, iters);
   if (shape === 2) return mapMenger(x, y, z, iters);
   if (shape === 3) return mapTetra(x, y, z, iters);
-  if (shape === 4) return mapBulb(x, y, z, power, iters, jx, jy, jz);
+  if (shape === 4) return mapBulb(x, y, z, power, iters, jx, jy, jz, 0);
   if (shape === 5) return mapQuat(x, y, z, iters, jx, jy, jz);
   if (shape === 6) {
     const t = Math.max(0, Math.min(1, jz));
-    return mapBulb(x, y, z, power, iters, x + (jx - x) * t, y + (jy - y) * t, z * (1 - t));
+    return mapBulb(x, y, z, power, iters, x + (jx - x) * t, y + (jy - y) * t, z * (1 - t), 1 - t);
   }
   return mapTetra(x, y, z, iters);
 }
 
-/** Mandelbulb / Juliabulb: z → z^p + c. Mandelbulb uses c = position; Juliabulb a fixed c. */
-function mapBulb(px, py, pz, power, iters, cx, cy, cz) {
+/**
+ * Mandelbulb / Juliabulb: z → z^p + c. Mandelbulb uses c = position; Juliabulb a fixed c.
+ * `grow` is dc/dp: 1 when c follows the position (Mandelbulb), 0 for a fixed c (Julia).
+ */
+function mapBulb(px, py, pz, power, iters, cx, cy, cz, grow) {
   let zx = px;
   let zy = py;
   let zz = pz;
@@ -1013,7 +1016,7 @@ function mapBulb(px, py, pz, power, iters, cx, cy, cz) {
       }
       const r2 = r * r;
       const r4 = r2 * r2;
-      dr = r4 * r2 * r * 8 * dr + 1;
+      dr = r4 * r2 * r * 8 * dr + grow;
       const zr = r4 * r4;
       zx = zr * st * cf + cx;
       zy = zr * st * sf + cy;
@@ -1022,7 +1025,7 @@ function mapBulb(px, py, pz, power, iters, cx, cy, cz) {
       const theta = Math.acos(Math.max(-1, Math.min(1, zz / r))) * p;
       const phi = Math.atan2(zy, zx) * p;
       const rp = r ** (p - 1);
-      dr = rp * p * dr + 1;
+      dr = rp * p * dr + grow;
       const zr = rp * r;
       const st = Math.sin(theta);
       zx = zr * st * Math.cos(phi) + cx;
@@ -1043,8 +1046,10 @@ function mapQuat(px, py, pz, iters, jx, jy, jz) {
   let r2 = 0;
   for (let i = 0; i < iters; i += 1) {
     r2 = x * x + y * y + z * z + w * w;
-    if (r2 > 8) break;
-    dr = 2 * Math.sqrt(r2) * dr + 1;
+    // log|q| |q| / |dq| is only a good bound once |q| is large; a small escape radius terraces the surface.
+    if (r2 > 1e4) break;
+    // A Julia set: c is fixed, so the derivative carries no + 1.
+    dr = 2 * Math.sqrt(r2) * dr;
     const x2 = x * x - y * y - z * z - w * w + jx;
     const y2 = 2 * x * y + jy;
     const z2 = 2 * x * z + jz;

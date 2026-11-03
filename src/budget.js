@@ -30,7 +30,7 @@ export const BUDGET = {
   mengerIter: 4,
   tetraIter: 5,
   juliabulbIter: 5,
-  quatIter: 6,
+  quatIter: 12,
   hybridIter: 5,
   maxIfsPoints: 2000000,
   interactArea: 0.55,

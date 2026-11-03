@@ -1021,7 +1021,8 @@ export class Presenter {
       phase,
       bg: [(interior & 255) / 255, ((interior >>> 8) & 255) / 255, ((interior >>> 16) & 255) / 255],
       density: input.density ?? 0.085,
-      steps: Math.max(6, Math.min(96, input.steps | 0 || 20)),
+      // The CPU budget is ~20-44 steps; close to a surface rays need far more, or they stop short and show as gaps.
+      steps: Math.round(Math.max(input.soft ? 48 : 72, Math.min(input.soft ? 128 : 224, (input.steps | 0 || 20) * (input.soft ? 2.5 : 4)))),
       iters: Math.max(3, Math.min(RAY_ITER_CAP[shape] || 5, input.rayIters | 0 || 4)),
       shape,
       mode,
