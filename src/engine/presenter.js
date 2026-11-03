@@ -179,7 +179,7 @@ export class Presenter {
     const full = Math.min(W * H, cap) * quality;
     let area = full;
     if (state.soft && this.wgpu && !this.wgpuBusy && this.wgpuEligible({ ...state, h: H })) area = full * this.gpuShare;
-    else if (state.soft) area = full * (state.deep ? this.deepShare : this.motionShare);
+    else if (state.soft) area = Math.min(BUDGET.motionPixels, full * (state.deep ? this.deepShare : this.motionShare));
     else if (!this.settled && !state.deep && full > BUDGET.settlePixels * 1.5) area = BUDGET.settlePixels * quality;
     return fitSize(W, H, Math.max(64 * 36, area));
   }
@@ -669,7 +669,8 @@ export class Presenter {
       return { pending: true, viewW: this.shown?.buf.w || 0, viewH: this.shown?.buf.h || 0, flip: false, deepInfo: this.deepInfo };
     }
     if (state.soft) this.settled = false;
-    const iterJump = this.job && state.deep && !this.job.cont && this.job.state.iters !== state.iters && (!this.job.soft || Math.abs(this.job.state.iters - state.iters) > this.job.state.iters * 0.25);
+    // A motion frame in progress is always let finish: cancelling it for a raised limit left deep zooms with no new frame for half a second.
+    const iterJump = this.job && state.deep && !this.job.cont && !this.job.soft && this.job.state.iters !== state.iters;
     if (this.job && ((state.soft && !this.job.soft) || iterJump)) {
       this.job = null;
       this.gen += 1;
@@ -935,11 +936,16 @@ export class Presenter {
     this.label = this.cpuLabel();
   }
 
-  /** On unless ?webgpu=0 (?webgpu=high picks the discrete GPU); checked against the CPU on a small frame first. */
+  /**
+   * Opt-in (?webgpu=2d, or ?webgpu=2d-high for the discrete GPU). The GPU computes 2D frames fast, but each one
+   * has to come back to JavaScript (100-300 ms of latency here, then a large unpack on the main thread), so new
+   * frames arrived in bursts with pauses between them; the CPU workers give a steadier cadence.
+   */
   armWebGpu() {
     this.wgpuState = "off";
-    const pick = new URLSearchParams(location.search).get("webgpu");
-    if (this.dead || pick === "0" || typeof navigator === "undefined" || !navigator.gpu) return;
+    const opt = new URLSearchParams(location.search).get("webgpu") || "";
+    if (this.dead || !opt.startsWith("2d") || typeof navigator === "undefined" || !navigator.gpu) return;
+    const pick = opt === "2d-high" ? "high" : "";
     this.wgpuState = "pending";
     Promise.all([import("./webgpu.js"), import("./gpuescape.js")])
       .then(async ([wg, ge]) => {

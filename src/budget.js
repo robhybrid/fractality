@@ -14,6 +14,8 @@ export const BUDGET = {
   maxPixelsIfs: 1920 * 1200,
   displayPixels: 3072 * 1920,
   settlePixels: 1920 * 1080,
+  // Motion frames stay under this so unpacking and uploading each one never costs more than a few ms on the main thread.
+  motionPixels: 1280 * 860,
   maxIter: 400,
   maxDeepIter: 60000,
   maxContIter: 1 << 19,
