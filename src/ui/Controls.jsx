@@ -140,7 +140,7 @@ export function Controls({ snap, engine }) {
         }}
       />
       <p className="status">
-        {snap.viewW}×{snap.viewH} · {snap.backend === "SVG" ? "vector" : snap.contIters > snap.iters ? `${snap.contIters.toLocaleString()} iters${snap.contDone ? "" : " and rising"}` : `${snap.iters} ${snap.family === "ray" ? "steps" : "iters"}`}
+        {snap.viewW}×{snap.viewH} · {snap.backend === "SVG" ? "vector" : snap.contIters > snap.iters ? `${Math.max(snap.iters, snap.contEscHi || 0).toLocaleString()} iters${snap.contDone ? "" : " and rising"}` : `${snap.iters} ${snap.family === "ray" ? "steps" : "iters"}`}
         {" · "}
         {snap.backend || "CPU"}
         {snap.antialiased ? " · antialiased" : ""}

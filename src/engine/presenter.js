@@ -473,6 +473,7 @@ export class Presenter {
       resolved: 0,
       pending,
       weak: shown.contWeak || 0,
+      base: shown.contBase || shown.state.iters,
     };
     this.job = job;
     while (this.idle.length && job.next < job.chunks.length) this.dispatch(this.idle.pop(), job);
@@ -483,11 +484,17 @@ export class Presenter {
     job.buf.cont = job.rest;
     const left = job.rest.reduce((sum, c) => sum + c.idx.length, 0);
     const weak = job.resolved < Math.max(64, job.pending * 0.01);
+    let escaped = 0;
+    for (let i = 0; i < job.buf.alpha.length; i += 1) escaped += job.buf.alpha[i];
+    // Nothing escaped anywhere yet: the whole view is still short of iterations, so weak passes do not count
+    // (interior pixels are settled by cycle detection, not left undecided), up to 64x the starting limit.
+    const blind = escaped === 0 && job.state.iters < job.base * 64;
     this.job = null;
     this.show(job.buf, job.view, job.ident, job.sig, job.state);
     this.shown.contIters = job.state.iters;
-    this.shown.contWeak = weak ? job.weak + 1 : 0;
-    this.shown.contDone = left === 0 || this.shown.contWeak >= 2 || job.state.iters >= BUDGET.maxContIter;
+    this.shown.contBase = job.base;
+    this.shown.contWeak = weak && !blind ? job.weak + 1 : 0;
+    this.shown.contDone = left === 0 || this.shown.contWeak >= 2 || job.state.iters >= BUDGET.maxContIter || (escaped === 0 && !blind);
     this.contMs = ms;
     this.deepInfo = { ...(this.deepInfo || {}), serial: (this.deepInfo?.serial || 0) + 1, contEscHi: escapeLimit(job.buf, job.state.iters) };
   }

@@ -142,6 +142,17 @@ const INTERIOR = 0xffffffff;
  * Table row and step for every pixel, before the phase shift. Built once per
  * frame and color setting, so an animated palette only adds the phase.
  */
+const SOFT_KNEE = 256;
+
+/**
+ * Iteration counts above the knee grow logarithmically for coloring. Deep
+ * views run thousands of iterations, where neighboring pixels differ by
+ * dozens of iterations and linear bands would cycle the palette per pixel.
+ */
+function soften(n) {
+  return n <= SOFT_KNEE ? n : SOFT_KNEE + SOFT_KNEE * Math.log(n / SOFT_KNEE);
+}
+
 export function indexFor(buf, mode, density, maxIter) {
   const key = `${mode}:${density}:${maxIter}:${buf.source}`;
   if (buf.pidx && buf.pidxKey === key) return buf.pidx;
@@ -160,7 +171,8 @@ export function indexFor(buf, mode, density, maxIter) {
     let step;
     let row = 0;
     if (remap) step = remap[i];
-    else if (flat && mode === 0) step = (band ? band[i] : Math.floor(iter[i])) * dens;
+    else if (flat && mode === 0) step = (band ? soften(band[i]) : Math.floor(soften(Math.floor(iter[i])))) * dens;
+    else if (flat) step = soften(iter[i]) * dens;
     else step = iter[i] * dens;
     if (!flat || mode === 2) row = level[i];
     out[i] = (row << 10) | ((step | 0) & mask);

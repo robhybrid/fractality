@@ -1030,7 +1030,8 @@ class Engine {
       if (info.contEscHi * 1.25 > iters) this.nextFloor = quant((info.contEscHi * 1.25) / scale);
       return;
     }
-    if (info.iters !== iters) return;
+    // Settled frames are carried on by continuation, which only revisits the undecided pixels.
+    if (info.iters !== iters || !info.soft) return;
     const depth = this.zoomOctaves();
     let want = iters;
     if (info.escHi > iters * 0.55) want = Math.min(info.escHi * 2, iters * 2);
@@ -1092,6 +1093,7 @@ class Engine {
       backend: this.renderer.label || "CPU",
       antialiased: isVectorShape(this.fractal) ? true : !!this.renderer.shown?.buf.cover,
       contIters: this.anchor ? this.renderer.shown?.contIters || 0 : 0,
+      contEscHi: this.anchor && this.renderer.shown?.contIters ? Math.round(this.renderer.deepInfo?.contEscHi || 0) : 0,
       contDone: !!this.renderer.shown?.contDone,
       phase: this.phase,
       viewW: this.view.viewW || 0,
