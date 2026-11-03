@@ -919,6 +919,7 @@ class Engine {
       ifsIters: 18,
       camera: ray ? lookCamera(this.eye, this.yaw, this.pitch) : null,
       camKey: ray ? this.camKey() : "",
+      gap: ray ? this.gap ?? 0 : 0,
       frame: this.frameData,
       frameKey: this.frameSig,
       deep: this.anchor ? { ax: this.anchor.x, ay: this.anchor.y, bits: this.anchor.bits, key: this.anchor.key } : null,

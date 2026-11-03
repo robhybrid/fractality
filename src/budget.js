@@ -9,6 +9,8 @@
 export const BUDGET = {
   maxPixels2d: 3072 * 1920,
   maxPixels3d: 960 * 540,
+  gpu3dPixels: 3072 * 1920,
+  gpu3dMotion: 1280 * 800,
   maxPixelsIfs: 1920 * 1200,
   displayPixels: 3072 * 1920,
   settlePixels: 1920 * 1080,

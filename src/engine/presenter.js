@@ -4,7 +4,7 @@ import { fitSize } from "./color.js";
 import { applyDistance, paintDistance, storeDistance } from "./distance.js";
 import { contTransfer } from "./deep.js";
 import { DeepReference } from "./deepRef.js";
-import { createBuffer, fillAll, fillRows, shadeLevels } from "./kernel.js";
+import { createBuffer, fillAll, fillRows, shadeLevels, RAY_FOCAL, RAY_ITER_CAP, SHADE_MODES, sceneRadius } from "./kernel.js";
 import { buildLut, interiorColor, paint } from "./shade.js";
 
 function q(n, places) {
@@ -645,6 +645,9 @@ export class Presenter {
 
   render(input) {
     this.lastState = input;
+    if (input.family === "ray" && this.ray3dUsable(input)) return this.renderRay3d(input);
+    this.ray3d?.hide();
+    if (input.family === "ray" && this.ray3dState === undefined) this.armRay3d();
     const { cssW, cssH } = input;
     const [W, H] = this.displaySize(cssW, cssH);
     if (this.canvas.width !== W || this.canvas.height !== H) {
@@ -972,6 +975,100 @@ export class Presenter {
       });
   }
 
+  /** The GPU ray marcher draws 3D frames itself while 32-bit floats can still place the surface. */
+  ray3dUsable(s) {
+    const g = this.ray3d;
+    if (!g || g.lost) return false;
+    return (s.gap || 0) > 3e-5 && (s.formula | 0) < 7;
+  }
+
+  renderRay3d(input) {
+    const [W, H] = this.displaySize(input.cssW, input.cssH);
+    const now = performance.now();
+    if (input.soft && this.ray3dLast) {
+      // Motion resolution follows the display frame rate: the GPU's own timing is not visible from here.
+      const dt = now - this.ray3dLast;
+      if (dt > 40) this.ray3dMotion = Math.max(160 * 100, this.ray3dMotion * 0.85);
+      else if (dt < 22) this.ray3dMotion = Math.min(BUDGET.gpu3dPixels, this.ray3dMotion * 1.08);
+    }
+    this.ray3dLast = now;
+    const full = Math.min(W * H, BUDGET.gpu3dPixels);
+    const [w, h] = fitSize(W, H, input.soft ? Math.min(full, this.ray3dMotion) : full);
+    const { gain, lutKey } = this.lutFor(input);
+    const phase = input.phase || 0;
+    const interior = interiorColor(this.lutPal, phase, input.colorInterior, gain);
+    const cam = input.camera;
+    const L = [0, 1, 2].map((k) => -0.45 * cam.right[k] + 0.6 * cam.up[k] - 0.65 * cam.forward[k]);
+    const ll = Math.hypot(...L) || 1;
+    const shape = input.formula | 0;
+    const mode = Math.max(0, SHADE_MODES.indexOf(input.shade3d || "glow"));
+    const eyeLen = Math.hypot(...cam.eye);
+    const s = {
+      camera: cam,
+      focal: RAY_FOCAL,
+      pixel: (2 / (h * RAY_FOCAL)) * 0.6,
+      floorEps: 2e-6 * (1 + eyeLen),
+      bound: sceneRadius(shape, input.power || 8),
+      julia: [input.juliaRe || 0, input.juliaIm || 0, input.extra || 0],
+      power: input.power || 8,
+      light: L.map((v) => v / ll),
+      phase,
+      bg: [(interior & 255) / 255, ((interior >>> 8) & 255) / 255, ((interior >>> 16) & 255) / 255],
+      density: input.density ?? 0.085,
+      steps: Math.max(6, Math.min(96, input.steps | 0 || 20)),
+      iters: Math.max(3, Math.min(RAY_ITER_CAP[shape] || 5, input.rayIters | 0 || 4)),
+      shape,
+      mode,
+      gain: input.exposure || 1,
+    };
+    const march = `${input.camKey}:${s.steps}:${s.iters}:${mode}:${shape}:${q(s.power, 4)}:${s.julia.map((v) => q(v, 5)).join(",")}:${w}x${h}`;
+    const color = `${lutKey}:${Math.floor((phase - Math.floor(phase)) * 1024)}:${q(s.density, 5)}:${interior}:${gain}`;
+    if (this.job) {
+      this.job = null;
+      this.gen += 1;
+    }
+    this.lastJobSig = "";
+    this.glp?.hide?.();
+    this.ray3d.show(this.canvas);
+    this.ray3d.draw(s, w, h, this.lut, { march, color, lut: lutKey });
+    this.label = this.ray3d.label;
+    const result = { pending: false, viewW: w, viewH: h, flip: false };
+    if (input.capture) {
+      const tmp = document.createElement("canvas");
+      tmp.width = w;
+      tmp.height = h;
+      const ctx = tmp.getContext("2d");
+      ctx.drawImage(this.ray3d.canvas, 0, 0);
+      result.pixels = ctx.getImageData(0, 0, w, h).data;
+      result.w = w;
+      result.h = h;
+    }
+    return result;
+  }
+
+  armRay3d() {
+    this.ray3dState = "off";
+    const pick = new URLSearchParams(location.search).get("webgpu");
+    if (this.dead || pick === "0" || typeof navigator === "undefined" || !navigator.gpu) return;
+    this.ray3dState = "pending";
+    this.ray3dMotion = BUDGET.gpu3dMotion;
+    import("./ray3d.js")
+      .then(async ({ createRay3d }) => {
+        const gpu = await createRay3d({ powerPreference: pick === "high" ? "high-performance" : "low-power" });
+        if (this.dead || !gpu) {
+          gpu?.destroy();
+          this.ray3dState = "failed";
+          return;
+        }
+        gpu.label = "WebGPU 3D";
+        this.ray3d = gpu;
+        this.ray3dState = "ready";
+      })
+      .catch(() => {
+        this.ray3dState = "failed";
+      });
+  }
+
   /** Opt-in (?gpu=tiles): tiled WebGL1 escape fill, including perturbation. */
   armTiles() {
     this.tilesState = "off";
@@ -1186,6 +1283,8 @@ export class Presenter {
     this.tiles?.gpu.destroy();
     this.tiles = null;
     this.dropWebGpu();
+    this.ray3d?.destroy();
+    this.ray3d = null;
     this.deepRef?.destroy();
     for (const worker of this.workers) worker.terminate();
     this.workers = [];
