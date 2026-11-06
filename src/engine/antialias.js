@@ -16,7 +16,8 @@ export function antialiasEligible(state) {
 
 function sampler(state) {
   const one = createBuffer(1, 1);
-  if (state.family === "escape" && state.formula < 8) {
+  const formula = state.formula | 0;
+  if (state.family === "escape" && (formula < 8 || formula === 17)) {
     const c = escapeContext(state);
     return (wx, wy) => {
       escapePixel(one, 0, wx, wy, c);

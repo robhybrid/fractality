@@ -1,3 +1,4 @@
+import { normalizeAlgo, parseAlgorithm } from "../algorithm.js";
 import { BUDGET } from "../budget.js";
 import { COLOR_MODES, FRACTALS, MODES, PALETTES, PRESETS, SHADE_MODES_3D, cloneStops } from "../data.js";
 import { BeatListener } from "./audio.js";
@@ -65,6 +66,10 @@ class Engine {
     this.beatMode = 0;
     this.beatPulse = 0;
     this.help = true;
+    this.custom = false;
+    this.customFractal = null;
+    this.algorithm = FRACTALS[0].algorithm;
+    this.algorithmOk = true;
     this.selectedStop = 0;
     this.presetCursor = 0;
     this.trap = 0;
@@ -121,7 +126,9 @@ class Engine {
     };
     this.wasSoft = true;
     window.addEventListener("keydown", this.onKey);
+    this.onSelectStart = (event) => event.preventDefault();
     canvas.addEventListener("pointerdown", this.onPointerDown);
+    canvas.addEventListener("selectstart", this.onSelectStart);
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
     window.addEventListener("pointercancel", this.onPointerUp);
@@ -149,6 +156,7 @@ class Engine {
   }
 
   get fractal() {
+    if (this.custom && this.customFractal) return this.customFractal;
     return FRACTALS[this.fractalIndex];
   }
 
@@ -170,6 +178,7 @@ class Engine {
     this.movie.cancelExport();
     window.removeEventListener("keydown", this.onKey);
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
+    this.canvas.removeEventListener("selectstart", this.onSelectStart);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
     window.removeEventListener("pointercancel", this.onPointerUp);
@@ -331,13 +340,95 @@ class Engine {
 
   setFractal(index) {
     const next = (index + FRACTALS.length) % FRACTALS.length;
-    if (next === this.fractalIndex) return;
+    if (!this.custom && next === this.fractalIndex) return;
+    this.custom = false;
+    this.customFractal = null;
     this.remember();
     this.fractalIndex = next;
     const mem = this.memory.get(FRACTALS[next].id);
     if (mem) this.restore(mem);
     else this.applyHome(FRACTALS[next], true);
+    this.algorithm = FRACTALS[next].algorithm;
+    this.algorithmOk = true;
     this.presetCursor = 0;
+    this.publish(true);
+  }
+
+  enterCustom() {
+    const f = this.fractal;
+    this.custom = true;
+    this.algorithm = f.algorithm || "z^2+c";
+    this.algorithmOk = true;
+    this.customFractal = {
+      ...f,
+      name: "Custom",
+      id: "custom",
+      algorithm: this.algorithm,
+    };
+    this.publish(true);
+  }
+
+  exitCustom() {
+    if (!this.custom) return;
+    const text = this.algorithm;
+    this.custom = false;
+    this.customFractal = null;
+    const match = FRACTALS.findIndex((item) => normalizeAlgo(item.algorithm) === normalizeAlgo(text));
+    if (match >= 0) this.setFractal(match);
+    else {
+      this.algorithm = this.fractal.algorithm;
+      this.algorithmOk = true;
+      this.publish(true);
+    }
+  }
+
+  setAlgorithm(text) {
+    this.algorithm = text;
+    const spec = parseAlgorithm(text, FRACTALS, this.customFractal || this.fractal);
+    if (!spec) {
+      this.algorithmOk = false;
+      this.publish(true);
+      return;
+    }
+    this.algorithmOk = true;
+    const prevFamily = this.fractal.family;
+    const prevFormula = this.fractal.formula;
+    this.customFractal = {
+      ...this.customFractal,
+      ...spec,
+      name: "Custom",
+      id: "custom",
+      algorithm: text.trim() || spec.algorithm,
+      julia: spec.julia,
+      extra: spec.extra,
+      extraLabel: spec.extraLabel,
+      extraRange: spec.extraRange,
+      frame: spec.frame,
+    };
+    if (!spec.keepPower && spec.power != null) {
+      this.power = spec.power;
+      this.powerT = spec.power;
+      this.breathBase = spec.power;
+    }
+    if (spec.bail != null) {
+      this.bailout = spec.bail;
+      this.bailT = spec.bail;
+    }
+    if (spec.julia) {
+      this.juliaRe = spec.julia[0];
+      this.juliaIm = spec.julia[1];
+      this.juliaReT = spec.julia[0];
+      this.juliaImT = spec.julia[1];
+    }
+    if (spec.extra != null) {
+      this.extra = spec.extra;
+      this.extraT = spec.extra;
+    }
+    if (spec.family !== prevFamily || spec.formula !== prevFormula) {
+      if (spec.home) this.applyHome(this.customFractal, !spec.keepPower);
+    }
+    this.refreshFrame(this.customFractal);
+    this.dirty = true;
     this.publish(true);
   }
 
@@ -1104,6 +1195,9 @@ class Engine {
       name: f.name,
       family: f.family,
       index: this.fractalIndex,
+      custom: this.custom,
+      algorithm: this.algorithm,
+      algorithmOk: this.algorithmOk,
       count: FRACTALS.length,
       mode: this.mode,
       modeLabel: mode?.label || this.mode,

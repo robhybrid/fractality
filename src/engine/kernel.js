@@ -33,8 +33,9 @@ export function fillRows(buf, state, y0, y1) {
     fillRay(buf, state, y0, y1);
     return;
   }
-  if (state.formula >= 12) fillShape(buf, state, y0, y1);
-  else if (state.formula >= 8) fillSpecial(buf, state, y0, y1);
+  const formula = state.formula | 0;
+  if (state.family === "shape" || (formula >= 12 && formula <= 16)) fillShape(buf, state, y0, y1);
+  else if (formula >= 8 && formula <= 11) fillSpecial(buf, state, y0, y1);
   else if (state.deep) {
     const k = deepContext(state);
     fillEscape(buf, state, y0, y1, deepPixel, k);
@@ -96,6 +97,20 @@ export function cpow(zx, zy, p) {
   return [Math.cos(a) * r, Math.sin(a) * r];
 }
 
+/** Complex power z^c with a complex exponent: exp(c · Log(z)). */
+export function cpowc(zx, zy, cx, cy) {
+  const r2 = zx * zx + zy * zy;
+  if (r2 < 1e-30) return [0, 0];
+  const lnR = 0.5 * Math.log(r2);
+  const arg = Math.atan2(zy, zx);
+  const ex = cx * lnR - cy * arg;
+  const ey = cx * arg + cy * lnR;
+  if (ex > 700) return [1e150, 0];
+  if (ex < -700) return [0, 0];
+  const er = Math.exp(ex);
+  return [er * Math.cos(ey), er * Math.sin(ey)];
+}
+
 export function smoothIter(i, zx, zy, bail, power) {
   const mag = Math.hypot(zx, zy);
   const logBail = Math.log(Math.sqrt(bail));
@@ -130,7 +145,7 @@ export function escapeContext(state) {
     formula,
     square,
     skip: !!(state.skipInterior && formula === 0 && Math.abs(power - 2) < 0.02),
-    periodic: !!state.skipInterior && formula !== 7,
+    periodic: !!state.skipInterior && formula !== 7 && formula !== 17,
     tol2: (px * 0.05) ** 2,
     julia: formula === 1 || formula === 7,
     jx: state.juliaRe || 0,
@@ -149,9 +164,16 @@ export function escapePixel(buf, idx, wx, wy, c) {
   let cy;
   let zx;
   let zy;
+  const formula = c.formula | 0;
   if (c.julia) {
     cx = c.jx;
     cy = c.jy;
+    zx = wx;
+    zy = wy;
+  } else if (formula === 17) {
+    // The Phoenix: z → z^c, orbit starts at the parameter c.
+    cx = wx;
+    cy = wy;
     zx = wx;
     zy = wy;
   } else {
@@ -164,7 +186,21 @@ export function escapePixel(buf, idx, wx, wy, c) {
     paintEscape(buf, idx, false, 0, 0);
     return;
   }
-  const { n, bail, formula, square, periodic, tol2, extraK } = c;
+  const { n, bail, square, periodic, tol2, extraK } = c;
+  if (formula === 17) {
+    for (let i = 0; i < n; i += 1) {
+      const next = cpowc(zx, zy, cx, cy);
+      zx = next[0];
+      zy = next[1];
+      const z2 = zx * zx + zy * zy;
+      if (!Number.isFinite(z2) || z2 > bail) {
+        paintEscape(buf, idx, true, smoothIter(i, zx, zy, bail, 2), 0.5 + 0.5 * Math.sin(Math.atan2(zy, zx) * 2));
+        return;
+      }
+    }
+    paintEscape(buf, idx, false, 0, 0);
+    return;
+  }
   let prevX = 0;
   let prevY = 0;
   let saveX = zx;

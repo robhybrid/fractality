@@ -114,6 +114,9 @@ function JuliaPad({ snap, engine }) {
 }
 
 const coarse = () => typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches;
+/** Same breakpoint as the bottom-sheet panel CSS: phones, tablets, and narrow windows. */
+const mobileChrome = () =>
+  typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse), (max-width: 700px)").matches;
 
 function TouchHelp() {
   return (
@@ -131,7 +134,26 @@ function TouchHelp() {
 export function Controls({ snap, engine }) {
   if (!engine) return null;
   const touch = coarse();
+  const mobile = mobileChrome();
   const stop = snap.stops[snap.selectedStop] || snap.stops[0];
+  const helpRef = useRef(null);
+  const algoRef = useRef(null);
+
+  useEffect(() => {
+    if (!snap.help) return undefined;
+    const dismiss = (event) => {
+      // Evaluate at tap time so a resize to the mobile sheet still dismisses help.
+      if (!mobileChrome()) return;
+      if (helpRef.current && !helpRef.current.contains(event.target)) engine.setHelp(false);
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [snap.help, engine]);
+
+  useEffect(() => {
+    if (snap.custom) algoRef.current?.focus();
+  }, [snap.custom]);
+
   return (
     <aside className="panel">
       <header className="title">
@@ -171,17 +193,54 @@ export function Controls({ snap, engine }) {
       {snap.movie ? <MoviePanel movie={snap.movie} engine={engine} /> : null}
       {snap.movie?.exporting ? null : (
         <>
-          <label className="field">
-            Fractal
-            <select value={snap.index} onChange={(event) => engine.setFractal(Number(event.target.value))}>
-              {snap.fractals.map((item) => (
-                <option key={item.name} value={item.index}>
-                  {item.hotkey ? `${item.hotkey}  ` : ""}
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          {snap.custom ? (
+            <label className="field">
+              Algorithm
+              <div className="algo-row">
+                <input
+                  ref={algoRef}
+                  type="text"
+                  className={snap.algorithmOk === false ? "algo bad" : "algo"}
+                  value={snap.algorithm}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  aria-label="Custom fractal algorithm"
+                  onChange={(event) => engine.setAlgorithm(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      engine.exitCustom();
+                    }
+                  }}
+                />
+                <button type="button" className="algo-back" aria-label="Back to fractal list" onClick={() => engine.exitCustom()}>
+                  ✕
+                </button>
+              </div>
+            </label>
+          ) : (
+            <label className="field">
+              Fractal
+              <select
+                value={snap.index}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (value === "custom") engine.enterCustom();
+                  else engine.setFractal(Number(value));
+                }}
+              >
+                {snap.fractals.map((item) => (
+                  <option key={item.name} value={item.index}>
+                    {item.hotkey ? `${item.hotkey}  ` : ""}
+                    {item.name}
+                  </option>
+                ))}
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+          )}
 
           <div className="actions">
             <button type="button" aria-label="Previous fractal" onClick={() => engine.setFractal(snap.index - 1)}>◀</button>
@@ -208,7 +267,7 @@ export function Controls({ snap, engine }) {
             ))}
           </div>
           <p className="hint">
-            {touch
+            {mobile || touch
               ? snap.family === "ray"
                 ? "Drag to orbit, pinch or hold to fly toward the surface, double tap to hop closer."
                 : "Drag to pan, pinch to zoom and twist to rotate, hold to dive, double tap to zoom in."
@@ -359,9 +418,9 @@ export function Controls({ snap, engine }) {
           </div>
           <p className="hint">Drop a song anywhere. Beat color is free. Beat zoom recomputes the set, so it stays on the cool preview.</p>
 
-          <details open={snap.help} onToggle={(event) => engine.setHelp(event.currentTarget.open)}>
-            <summary>{touch ? "Touch gestures" : "Keys, including while this panel is hidden"}</summary>
-            {touch ? <TouchHelp /> : null}
+          <details ref={helpRef} open={snap.help} onToggle={(event) => engine.setHelp(event.currentTarget.open)}>
+            <summary>{mobile || touch ? "Touch gestures" : "Keys, including while this panel is hidden"}</summary>
+            {mobile || touch ? <TouchHelp /> : null}
             <ul className="keys desk-keys">
               <li><kbd>H</kbd> hide panel</li>
               <li><kbd>1</kbd>-<kbd>0</kbd> fractals</li>

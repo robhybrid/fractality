@@ -190,7 +190,8 @@ export class Renderer {
 
   drawEscape(state, vw, vh) {
     const gl = this.gl;
-    const key = state.formula >= 12 ? "shape" : state.formula >= 8 ? "special" : "classic";
+    const f = state.formula | 0;
+    const key = state.family === "shape" || (f >= 12 && f <= 16) ? "shape" : f >= 8 && f <= 11 ? "special" : "classic";
     if (!this.programs[key]) {
       const source = key === "shape" ? SHAPE_FRAG : SPECIAL_FRAG;
       this.program(key, VERT, source);
