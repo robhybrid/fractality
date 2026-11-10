@@ -821,6 +821,27 @@ function fillIfs(buf, state) {
 export const RAY_FOCAL = 1.35;
 export const RAY_ITER_CAP = [12, 18, 12, 24, 12, 24, 12];
 
+/**
+ * Screen-space split for the Sierpinski tetrahedron. A sphere is replaced by
+ * its four children only while its diameter covers at least `minPx` pixels
+ * from `eye`. `minPx` is never below 1, so the drawing never gets finer than
+ * one sphere per pixel. `focalH` is render height times RAY_FOCAL.
+ */
+const tetraLod = { on: false, ex: 0, ey: 0, ez: 0, focalH: 1, minPx: 1 };
+
+export function setTetraLod(eye, focalH, minPx) {
+  if (!eye || !(focalH > 0)) {
+    tetraLod.on = false;
+    return;
+  }
+  tetraLod.on = true;
+  tetraLod.ex = eye[0];
+  tetraLod.ey = eye[1];
+  tetraLod.ez = eye[2];
+  tetraLod.focalH = focalH;
+  tetraLod.minPx = minPx < 1 ? 1 : minPx;
+}
+
 /** Radius of a sphere that holds every visible part of each 3D formula. */
 export function sceneRadius(shape, power) {
   if (shape === 0 || shape === 4 || shape === 6) return 2;
@@ -841,6 +862,8 @@ function fillRay(buf, state, y0, y1) {
   const steps = Math.max(6, Math.min(72, state.steps | 0 || 12));
   const shape = state.formula | 0;
   const iters = Math.max(3, Math.min(RAY_ITER_CAP[shape] || 5, state.rayIters | 0 || 4));
+  if (shape === 3) setTetraLod(cam.eye, Math.max(1, h) * RAY_FOCAL, state.spherePx || 1);
+  else setTetraLod(null);
   const power = state.power || 8;
   const jx = state.juliaRe || 0;
   const jy = state.juliaIm || 0;
@@ -1166,26 +1189,61 @@ function mapTetra(px, py, pz, iters) {
   let y = py;
   let z = pz;
   let scale = 1;
+  const lod = tetraLod.on;
+  let ex = tetraLod.ex;
+  let ey = tetraLod.ey;
+  let ez = tetraLod.ez;
   const n = iters;
   for (let i = 0; i < n; i += 1) {
+    if (lod) {
+      // The eye is carried through the same folds as the sample, so it stays
+      // in this sphere's local space. length(eye) / scale is the world distance
+      // from the camera to the sphere that would be drawn at this level.
+      const rad = 1.45 / scale;
+      const dist = Math.hypot(ex, ey, ez) / scale;
+      if (dist > rad) {
+        const pixels = Math.asin(Math.min(1, rad / dist)) * tetraLod.focalH;
+        if (pixels < tetraLod.minPx) break;
+      }
+    }
     if (x + y < 0) {
       const tx = -y;
       y = -x;
       x = tx;
+      if (lod) {
+        const et = -ey;
+        ey = -ex;
+        ex = et;
+      }
     }
     if (x + z < 0) {
       const tx = -z;
       z = -x;
       x = tx;
+      if (lod) {
+        const et = -ez;
+        ez = -ex;
+        ex = et;
+      }
     }
     if (y + z < 0) {
       const ty = -z;
       z = -y;
       y = ty;
+      if (lod) {
+        const et = -ez;
+        ez = -ey;
+        ey = et;
+      }
     }
     x = x * 2 - 1;
     y = y * 2 - 1;
     z = z * 2 - 1;
+    if (lod) {
+      ex = ex * 2 - 1;
+      ey = ey * 2 - 1;
+      ez = ez * 2 - 1;
+    }
     scale *= 2;
   }
   return (Math.hypot(x, y, z) - 1.45) / scale;

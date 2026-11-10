@@ -229,6 +229,7 @@ export class Renderer {
     gl.uniform1i(u.uShape, state.formula);
     gl.uniform1i(u.uSteps, state.steps);
     gl.uniform1i(u.uIters, state.rayIters);
+    gl.uniform1f(u.uSpherePx, (state.formula | 0) === 3 ? Math.max(1, state.spherePx || 1) : 0);
     this.drawQuad();
   }
 

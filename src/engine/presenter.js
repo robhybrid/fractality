@@ -26,7 +26,7 @@ function paramKey(s) {
     s.dem ? (s.deKoebe ? 2 : 1) : 0,
     s.frameKey || "",
     s.deep ? "deep" : "",
-    s.family === "ray" ? `${s.camKey}:${s.steps}:${s.rayIters}:${s.shade3d || ""}` : "",
+    s.family === "ray" ? `${s.camKey}:${s.steps}:${s.rayIters}:${s.shade3d || ""}:${q(s.spherePx || 0, 2)}` : "",
   ].join(":");
 }
 
@@ -1024,11 +1024,12 @@ export class Presenter {
       // The CPU budget is ~20-44 steps; close to a surface rays need far more, or they stop short and show as gaps.
       steps: Math.round(Math.max(input.soft ? 48 : 72, Math.min(input.soft ? 128 : 224, (input.steps | 0 || 20) * (input.soft ? 2.5 : 4)))),
       iters: Math.max(3, Math.min(RAY_ITER_CAP[shape] || 5, input.rayIters | 0 || 4)),
+      lodPx: shape === 3 ? Math.max(1, input.spherePx || 1) : 0,
       shape,
       mode,
       gain: input.exposure || 1,
     };
-    const march = `${input.camKey}:${s.steps}:${s.iters}:${mode}:${shape}:${q(s.power, 4)}:${s.julia.map((v) => q(v, 5)).join(",")}:${w}x${h}`;
+    const march = `${input.camKey}:${s.steps}:${s.iters}:${s.lodPx}:${mode}:${shape}:${q(s.power, 4)}:${s.julia.map((v) => q(v, 5)).join(",")}:${w}x${h}`;
     const color = `${lutKey}:${Math.floor((phase - Math.floor(phase)) * 1024)}:${q(s.density, 5)}:${interior}:${gain}`;
     if (this.job) {
       this.job = null;

@@ -23,6 +23,7 @@ struct U {
   bg: vec3f, density: f32,
   size: vec2f, steps: u32, iters: u32,
   shape: u32, mode: u32, gain: f32, floorEps: f32,
+  lodPx: f32,
 };
 @group(0) @binding(0) var<uniform> P: U;
 
@@ -96,12 +97,34 @@ fn menger(p: vec3f) -> f32 {
 
 fn tetra(p: vec3f) -> f32 {
   var z = p;
+  var eye = P.eye;
   var scale = 1.0;
+  let lod = P.lodPx >= 1.0;
+  let focalH = P.size.y * P.focal;
+  let minPx = max(P.lodPx, 1.0);
   for (var i = 0u; i < P.iters; i++) {
-    if (z.x + z.y < 0.0) { z = vec3f(-z.y, -z.x, z.z); }
-    if (z.x + z.z < 0.0) { z = vec3f(-z.z, z.y, -z.x); }
-    if (z.y + z.z < 0.0) { z = vec3f(z.x, -z.z, -z.y); }
+    if (lod) {
+      let rad = 1.45 / scale;
+      let dist = length(eye) / scale;
+      if (dist > rad) {
+        let pixels = asin(min(1.0, rad / dist)) * focalH;
+        if (pixels < minPx) { break; }
+      }
+    }
+    if (z.x + z.y < 0.0) {
+      z = vec3f(-z.y, -z.x, z.z);
+      if (lod) { eye = vec3f(-eye.y, -eye.x, eye.z); }
+    }
+    if (z.x + z.z < 0.0) {
+      z = vec3f(-z.z, z.y, -z.x);
+      if (lod) { eye = vec3f(-eye.z, eye.y, -eye.x); }
+    }
+    if (z.y + z.z < 0.0) {
+      z = vec3f(z.x, -z.z, -z.y);
+      if (lod) { eye = vec3f(eye.x, -eye.z, -eye.y); }
+    }
     z = z * 2.0 - vec3f(1.0);
+    if (lod) { eye = eye * 2.0 - vec3f(1.0); }
     scale *= 2.0;
   }
   return (length(z) - 1.45) / scale;
@@ -276,7 +299,7 @@ export async function createRay3d({ powerPreference = "low-power" } = {}) {
     device.destroy();
     return null;
   }
-  const uniform = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const uniform = device.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const lutTex = device.createTexture({ size: [1024, 1], format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
   let marchTex = null;
   let marchGroup = null;
@@ -287,7 +310,7 @@ export async function createRay3d({ powerPreference = "low-power" } = {}) {
   let colorKey = "";
   let lutKey = "";
   let shown = false;
-  const data = new ArrayBuffer(144);
+  const data = new ArrayBuffer(160);
   const f = new Float32Array(data);
   const u = new Uint32Array(data);
 
@@ -336,6 +359,7 @@ export async function createRay3d({ powerPreference = "low-power" } = {}) {
       u[33] = s.mode;
       f[34] = s.gain;
       f[35] = s.floorEps;
+      f[36] = s.lodPx || 0;
       device.queue.writeBuffer(uniform, 0, data);
       const enc = device.createCommandEncoder();
       const remarch = key.march !== marchKey;

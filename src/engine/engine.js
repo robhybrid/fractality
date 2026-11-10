@@ -5,12 +5,16 @@ import { BeatListener } from "./audio.js";
 import { clamp, cssGradient, fitSize, randomPalette, rasterize, shiftHue, smoothDamp } from "./color.js";
 import { anchorPoint, childOffset, frameInfo, frameKey, frameSpec, renormStep } from "./frames.js";
 import { angles, baseGap, basis, clampPitch, lookCamera, march, probe, orbitEye, pivotDistance, pixelRay, rayDetail, wrapAngle } from "./flight.js";
+import { RAY_FOCAL, setTetraLod } from "./kernel.js";
 import { MovieMaker } from "./movie.js";
 import { Presenter } from "./presenter.js";
 import { clearVector, isVectorShape, paintVector, rasterizeVector } from "./vector.js";
 import { bigFromDecimal, bigFromDouble, bigToDecimal, bigToDouble, bitsFor, rebits } from "./deep.js";
 
 const HOTKEY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9 };
+// Minimum on-screen diameter, in pixels, before a Sierpinski sphere splits.
+// 1 is the finest the picture is allowed to get: one sphere per pixel.
+const SPHERE_PX = [1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 36];
 /** Below DEEP_ON the view center moves to a BigInt anchor and pixels are rendered by perturbation. */
 const DEEP_ON = 5e-10;
 const DEEP_OFF = 2e-9;
@@ -36,6 +40,9 @@ class Engine {
     this.frameEma = 16;
     this.stress = 0;
     this.relax = 0;
+    this.sphereLevel = 0;
+    this.sphereStress = 0;
+    this.sphereRelax = 0;
     this.iterScale = 1;
     this.pixelScale = 1;
     this.throttled = false;
@@ -84,6 +91,7 @@ class Engine {
     this.drag = null;
     this.zoomTarget = 0;
     this.zoomRate = 0;
+    this.shift = false;
     this.buttons = new Set();
     this.touches = new Map();
     this.gesture = null;
@@ -109,6 +117,7 @@ class Engine {
     this.renderer.uploadPalette("b", rasterize(this.stops));
     this.movie = new MovieMaker(this);
     this.onKey = this.onKey.bind(this);
+    this.onKeyUp = this.onKeyUp.bind(this);
     this.onPointerDown = this.onPointerDown.bind(this);
     this.onPointerMove = this.onPointerMove.bind(this);
     this.onPointerUp = this.onPointerUp.bind(this);
@@ -119,13 +128,20 @@ class Engine {
     this.onDbl = (event) => {
       // Touch double taps are handled by the gesture code; ignore the synthesized dblclick.
       if (performance.now() - (this.lastTouchAt || 0) < 900) return;
-      this.nudgeZoom(event, 0.62);
+      this.nudgeZoom(event, this.mode === "zoom" && event.shiftKey ? 1.62 : 0.62);
     };
     this.onResize = () => {
       this.dirty = true;
     };
     this.wasSoft = true;
     window.addEventListener("keydown", this.onKey);
+    window.addEventListener("keyup", this.onKeyUp);
+    this.onBlur = () => {
+      if (!this.shift) return;
+      this.shift = false;
+      this.applyZoomHold();
+    };
+    window.addEventListener("blur", this.onBlur);
     this.onSelectStart = (event) => event.preventDefault();
     canvas.addEventListener("pointerdown", this.onPointerDown);
     canvas.addEventListener("selectstart", this.onSelectStart);
@@ -177,6 +193,8 @@ class Engine {
     cancelAnimationFrame(this.raf);
     this.movie.cancelExport();
     window.removeEventListener("keydown", this.onKey);
+    window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.onBlur);
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     this.canvas.removeEventListener("selectstart", this.onSelectStart);
     window.removeEventListener("pointermove", this.onPointerMove);
@@ -524,14 +542,28 @@ class Engine {
     return [this.juliaRe || 0, this.juliaIm || 0, this.extra || 0];
   }
 
+  /** Point the tetrahedron's screen-size split at this viewpoint. */
+  bindTetra(eye) {
+    const tetra = this.fractal.family === "ray" && (this.fractal.formula | 0) === 3;
+    if (!tetra) {
+      setTetraLod(null);
+      return;
+    }
+    const h = this.view?.viewH || this.screenSize().h || 1;
+    setTetraLod(eye, Math.max(1, h) * RAY_FOCAL, SPHERE_PX[this.sphereLevel] || 1);
+  }
+
   flightGap(eye = this.eye) {
     const f = this.fractal;
     const [jx, jy, jz] = this.julia3();
-    const key = `${f.id}:${Math.round(this.power * 1000)}:${Math.round(jx * 1e4)}:${Math.round(jy * 1e4)}:${Math.round(jz * 1e4)}`;
+    const lodKey = (f.formula | 0) === 3 ? `:${this.sphereLevel}:${Math.round(this.view?.viewH || 0)}` : "";
+    const key = `${f.id}:${Math.round(this.power * 1000)}:${Math.round(jx * 1e4)}:${Math.round(jy * 1e4)}:${Math.round(jz * 1e4)}${lodKey}`;
     if (this.homeKey !== key) {
       this.homeKey = key;
+      this.bindTetra(orbitEye(f.home.yaw, f.home.pitch, f.home.dist));
       this.homeGap = baseGap(orbitEye(f.home.yaw, f.home.pitch, f.home.dist), f.formula, this.power, jx, jy, jz);
     }
+    this.bindTetra(eye);
     const found = probe(eye, f.formula, this.power, this.homeGap, this.gapIters, jx, jy, jz);
     if (eye === this.eye) this.gapIters = found.iters;
     return found.gap;
@@ -540,6 +572,7 @@ class Engine {
   /** Continuous zoom: fly along the ray under the cursor and steer the view toward it. */
   flyAt(x, y, factor) {
     const { w, h } = this.screenSize();
+    this.bindTetra(this.eye);
     const cam = lookCamera(this.eye, this.yaw, this.pitch);
     const gap = this.gap ?? this.flightGap();
     if (factor < 1) {
@@ -919,6 +952,7 @@ class Engine {
   }
 
   govern() {
+    this.adaptSphere();
     if (this.frameEma > 50) {
       this.stress += 1;
       this.relax = 0;
@@ -933,6 +967,39 @@ class Engine {
     } else {
       this.stress = Math.max(0, this.stress - 1);
       this.relax = 0;
+    }
+  }
+
+  /**
+   * While the tetrahedron is on screen, a slow frame means spheres have to
+   * cover more pixels before they split. A run of fast frames walks that
+   * requirement back toward one pixel, which is the finest split allowed.
+   */
+  adaptSphere() {
+    const tetra = this.fractal.family === "ray" && (this.fractal.formula | 0) === 3;
+    if (!tetra) {
+      this.sphereStress = 0;
+      this.sphereRelax = 0;
+      return;
+    }
+    const ms = this.frameEma;
+    if (ms > 40) {
+      this.sphereRelax = 0;
+      this.sphereStress += 1;
+      if (this.sphereStress >= 3 && this.sphereLevel < SPHERE_PX.length - 1) {
+        this.sphereLevel += ms > 70 && this.sphereLevel < SPHERE_PX.length - 2 ? 2 : 1;
+        this.sphereStress = 0;
+      }
+    } else if (ms < 18) {
+      this.sphereStress = 0;
+      this.sphereRelax += 1;
+      if (this.sphereRelax >= 36 && this.sphereLevel > 0) {
+        this.sphereLevel -= 1;
+        this.sphereRelax = 0;
+      }
+    } else {
+      this.sphereStress = Math.max(0, this.sphereStress - 1);
+      this.sphereRelax = 0;
     }
   }
 
@@ -1004,6 +1071,7 @@ class Engine {
       iters,
       steps: ray ? ray.steps : BUDGET.defaultSteps,
       rayIters: ray ? ray.iters : 0,
+      spherePx: (this.fractal.formula | 0) === 3 ? (offline ? 1 : SPHERE_PX[this.sphereLevel] || 1) : 0,
       trap: this.trap,
       skipInterior: this.skipInterior,
       ifsPoints: Math.round(BUDGET.maxIfsPoints * quality),
@@ -1278,7 +1346,26 @@ class Engine {
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON";
   }
 
+  onKeyUp(event) {
+    if (event.key !== "Shift") return;
+    this.shift = false;
+    this.applyZoomHold();
+  }
+
+  /** Left-button zoom follows the mode. In Zoom, Shift backs out instead of diving in. */
+  applyZoomHold() {
+    if (this.buttons.has(2) || this.alt) this.zoomTarget = BUDGET.zoomOut;
+    else if (this.buttons.has(0) && this.mode === "zoom") this.zoomTarget = this.shift ? BUDGET.zoomOut : BUDGET.zoomIn;
+    else if (this.buttons.has(0) && this.mode === "zoomout") this.zoomTarget = BUDGET.zoomOut;
+    else this.zoomTarget = 0;
+  }
+
   onKey(event) {
+    if (event.key === "Shift") {
+      this.shift = true;
+      this.applyZoomHold();
+      return;
+    }
     if (this.typing(event)) return;
     const key = event.key;
     if (this.movie.exporting) {
@@ -1684,12 +1771,14 @@ class Engine {
     this.mx = event.offsetX;
     this.my = event.offsetY;
     this.alt = event.altKey;
+    this.shift = event.shiftKey;
+    const reverseZoom = this.mode === "zoom" && event.shiftKey;
     if (event.button === 2 || event.altKey) this.zoomTarget = BUDGET.zoomOut;
-    else if (event.button === 1 || event.shiftKey) {
+    else if ((event.button === 1 || event.shiftKey) && !reverseZoom) {
       this.drag = "pan";
       if (this.fractal.family === "ray") this.pivot = this.orbitPivot(this.eye, this.yaw, this.pitch);
     }
-    else if (this.mode === "zoom") this.zoomTarget = BUDGET.zoomIn;
+    else if (this.mode === "zoom") this.zoomTarget = reverseZoom ? BUDGET.zoomOut : BUDGET.zoomIn;
     else if (this.mode === "zoomout") this.zoomTarget = BUDGET.zoomOut;
     else {
       this.drag = this.mode;
@@ -1894,10 +1983,7 @@ class Engine {
       this.alt = false;
       return;
     }
-    if (this.buttons.has(2) || this.alt) this.zoomTarget = BUDGET.zoomOut;
-    else if (this.buttons.has(0) && this.mode === "zoom") this.zoomTarget = BUDGET.zoomIn;
-    else if (this.buttons.has(0) && this.mode === "zoomout") this.zoomTarget = BUDGET.zoomOut;
-    else this.zoomTarget = 0;
+    this.applyZoomHold();
   }
 
   onWheel(event) {

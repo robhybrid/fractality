@@ -401,6 +401,7 @@ uniform float uPower;
 uniform int uShape;
 uniform int uSteps;
 uniform int uIters;
+uniform float uSpherePx;
 out vec4 fragColor;
 vec4 encode(float iter, float extra, float alpha) {
   iter = clamp(iter, 0.0, 255.0);
@@ -470,14 +471,26 @@ float mapMenger(vec3 p) {
 float mapTetra(vec3 z) {
   float scale = 1.0;
   int iters = uIters;
-  if (iters > 8) iters = 8;
-  for (int i = 0; i < 8; i++) {
+  if (iters > 24) iters = 24;
+  vec3 eye = uEye;
+  bool lod = uSpherePx >= 1.0;
+  float focalH = uResolution.y * 1.35;
+  float minPx = max(uSpherePx, 1.0);
+  for (int i = 0; i < 24; i++) {
     if (i < iters) {
-      if (z.x + z.y < 0.0) z.xy = -z.yx;
-      if (z.x + z.z < 0.0) z.xz = -z.zx;
-      if (z.y + z.z < 0.0) z.zy = -z.yz;
-      z = z * 2.0 - vec3(1.0);
-      scale *= 2.0;
+      if (lod) {
+        float rad = 1.45 / scale;
+        float dist = length(eye) / scale;
+        if (dist > rad && asin(min(1.0, rad / dist)) * focalH < minPx) iters = i;
+      }
+      if (i < iters) {
+        if (z.x + z.y < 0.0) { z.xy = -z.yx; if (lod) eye.xy = -eye.yx; }
+        if (z.x + z.z < 0.0) { z.xz = -z.zx; if (lod) eye.xz = -eye.zx; }
+        if (z.y + z.z < 0.0) { z.zy = -z.yz; if (lod) eye.zy = -eye.yz; }
+        z = z * 2.0 - vec3(1.0);
+        if (lod) eye = eye * 2.0 - vec3(1.0);
+        scale *= 2.0;
+      }
     }
   }
   return (length(z) - 1.45) / scale;

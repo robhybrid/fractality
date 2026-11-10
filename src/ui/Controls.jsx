@@ -272,11 +272,15 @@ export function Controls({ snap, engine }) {
                 ? "Drag to orbit, pinch or hold to fly toward the surface, double tap to hop closer."
                 : "Drag to pan, pinch to zoom and twist to rotate, hold to dive, double tap to zoom in."
               : snap.family === "ray"
-              ? snap.name.includes("Julia") || snap.name.includes("Hybrid") || snap.name.includes("Quaternion")
+              ? snap.mode === "zoom"
+                ? "Hold to fly toward the surface. Shift flies back out. Right-click backs away."
+                : snap.name.includes("Julia") || snap.name.includes("Hybrid") || snap.name.includes("Quaternion")
                 ? "Hold to fly toward the surface. C or Julia mode sets the constant; Extra blends or sets the third component. Shift-drag orbits."
                 : "Hold to fly toward the surface under the cursor. Right-click backs away. Shift-drag or arrows orbit. R returns home."
               : snap.backend === "SVG"
-                ? "Vector geometry — crisp at every zoom. Hold to zoom; structure subdivides instead of blurring."
+                ? "Vector geometry — crisp at every zoom. Hold to zoom; Shift zooms out."
+                : snap.mode === "zoom"
+                ? "Hold to zoom in on the cursor. Shift zooms out. Right-click zooms out."
                 : `${snap.modeBlurb}. Right-click zooms out. Wheel changes palette speed.`}
           </p>
 

@@ -83,6 +83,13 @@ function rawGap(eye, shape, power, iters, jx = 0, jy = 0, jz = 0) {
  */
 export function probe(eye, shape, power, homeGap, prev = null, jx = 0, jy = 0, jz = 0) {
   const base = BASE_ITERS[shape] ?? 5;
+  // The tetrahedron splits per sphere from how large it is on screen, so a
+  // closer camera must not raise the iteration cap for the whole shape.
+  if ((shape | 0) === 3) {
+    const iters = RAY_ITER_CAP[3];
+    const gap = rawGap(eye, shape, power, iters, jx, jy, jz);
+    return { gap: gap > 0 ? gap : 0, iters };
+  }
   let iters = prev ?? base;
   let gap = rawGap(eye, shape, power, iters, jx, jy, jz);
   const want = itersAt(shape, depthOf(gap, homeGap));
@@ -104,7 +111,8 @@ export function gapAt(eye, shape, power, homeGap, iters, jx = 0, jy = 0, jz = 0)
 }
 
 export function baseGap(eye, shape, power, jx = 0, jy = 0, jz = 0) {
-  return Math.max(1e-3, rawGap(eye, shape, power, BASE_ITERS[shape] ?? 5, jx, jy, jz));
+  const iters = (shape | 0) === 3 ? RAY_ITER_CAP[3] : (BASE_ITERS[shape] ?? 5);
+  return Math.max(1e-3, rawGap(eye, shape, power, iters, jx, jy, jz));
 }
 
 export function depthOf(gap, homeGap) {
